@@ -2,6 +2,8 @@
 
 A high-performance Python security auditing and analysis tool for Microsoft Entra ID (formerly Azure AD). This tool securely authenticates via Microsoft Graph, extracts core identity and access configurations, performs deep heuristic analysis—including robust **Conditional Access & MFA policy profiling**—and generates structured audit reports.
 
+Currently still in development, but this is the idea below:
+
 ---
 
 ## 🌟 Key Features
