@@ -17,6 +17,12 @@ MICROSOFT_TENANT_ID = "f8cdef31-a31e-4b4a-93e4-5f571e91255a"  # owner of first-p
 Severity = Literal["info", "low", "medium", "high", "critical"]
 
 
+def _aware(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def _latest(*values: datetime | None) -> datetime | None:
     present = [v for v in values if v is not None]
     return max(present) if present else None
@@ -36,6 +42,13 @@ class Finding(BaseModel):
     title: str
     evidence: dict[str, Any] = Field(default_factory=dict)
     remediation: str = ""
+    # Disambiguates several findings of one check on one resource (role id, credential id, ...)
+    key: str = ""
+
+    @property
+    def fingerprint(self) -> str:
+        """Stable identity across runs; used to diff two runs into new/resolved findings."""
+        return "|".join((self.check_id, self.resource_type, self.resource_id, self.key))
 
 
 # ------------------------------------------------------------------ users --
@@ -52,6 +65,12 @@ class User(BaseModel):
     last_sign_in: datetime | None = None                 # interactive
     last_non_interactive_sign_in: datetime | None = None
     last_successful_sign_in: datetime | None = None
+    external_user_state: str | None = None               # guests: "PendingAcceptance" | "Accepted"
+    external_user_state_changed_at: datetime | None = None
+
+    @property
+    def has_pending_invitation(self) -> bool:
+        return self.is_guest and self.external_user_state == "PendingAcceptance"
 
     @property
     def is_guest(self) -> bool:
@@ -209,8 +228,13 @@ class Credential(BaseModel):
     end: datetime | None = None
 
     def is_expired(self, now: datetime | None = None) -> bool:
-        now = now or datetime.now(timezone.utc)
-        return self.end is not None and self.end < now
+        end = _aware(self.end)
+        return end is not None and end < (now or datetime.now(timezone.utc))
+
+    def days_until_expiry(self, now: datetime | None = None) -> int | None:
+        """Whole days left (negative once expired); None if the credential never expires."""
+        end = _aware(self.end)
+        return None if end is None else (end - (now or datetime.now(timezone.utc))).days
 
 
 class Application(BaseModel):
@@ -222,6 +246,12 @@ class Application(BaseModel):
     sign_in_audience: str | None = None
     credentials: list[Credential] = Field(default_factory=list)
     owner_count: int | None = None
+
+    @property
+    def is_multi_tenant(self) -> bool:
+        return self.sign_in_audience in (
+            "AzureADMultipleOrgs", "AzureADandPersonalMicrosoftAccount", "PersonalMicrosoftAccount"
+        )
 
 
 class ServicePrincipal(BaseModel):
@@ -241,6 +271,10 @@ class ServicePrincipal(BaseModel):
     @property
     def is_microsoft_first_party(self) -> bool:
         return self.app_owner_organization_id == MICROSOFT_TENANT_ID
+
+    @property
+    def is_managed_identity(self) -> bool:
+        return self.service_principal_type == "ManagedIdentity"
 
 
 # --------------------------------------------------------------- snapshot --
