@@ -1,0 +1,37 @@
+# --- Secrets: never commit these ---------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+token_cache*.json
+.entra_auditor/
+
+# --- Audit output: describes your tenant's weaknesses ------------------------
+reports/
+runs/
+*-findings.csv
+*-policies.csv
+entra-audit-*.json
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Editors / OS ------------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store

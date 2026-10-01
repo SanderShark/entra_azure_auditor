@@ -1,17 +1,3 @@
-from .client import (
-    GraphAuthError,
-    GraphClient,
-    GraphError,
-    GraphNotFoundError,
-    GraphPermissionError,
-    GraphRetryExhaustedError,
-)
+"""Entra ID / Azure security auditor."""
 
-__all__ = [
-    "GraphAuthError",
-    "GraphClient",
-    "GraphError",
-    "GraphNotFoundError",
-    "GraphPermissionError",
-    "GraphRetryExhaustedError",
-]
+__version__ = "0.1.0"

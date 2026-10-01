@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "entra-auditor"
+dynamic = ["version", "dependencies"]
+description = "Read-only security auditor for Microsoft Entra ID: inactive and privileged accounts, MFA, Conditional Access, stale apps."
+readme = "README.md"
+requires-python = ">=3.10"
+# Add a `license` entry (and a LICENSE file) once you have chosen one.
+
+[project.scripts]
+auditor = "entra_auditor.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "entra_auditor.__version__" }
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["entra_auditor*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+# Typer builds its CLI from `Optional[...]` annotations and call-expression defaults.
+ignore = ["E501", "B008", "UP007", "UP045"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
