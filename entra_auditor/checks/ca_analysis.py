@@ -645,10 +645,12 @@ def _concerns(p: ConditionalAccessPolicy, prof: PolicyProfile, ctx: CaContext) -
 # --------------------------------------------------------------------------- #
 
 def _summary(prof: PolicyProfile) -> str:
+    # The lead-in already says REQUIRE, so drop each requirement's own "Require " prefix.
+    wanted = [r.removeprefix("Require ") for r in prof.requirements]
     lead = {
         "block": "BLOCK access",
-        "grant": "REQUIRE " + (" OR ".join(prof.requirements) if prof.requirement_logic == "any"
-                               else " AND ".join(prof.requirements)),
+        "grant": "REQUIRE " + (" OR ".join(wanted) if prof.requirement_logic == "any"
+                               else " AND ".join(wanted)),
         "session_only": "APPLY session controls (" + ", ".join(prof.session_controls) + ")",
         "no_effect": "Does nothing (no grant or session controls)",
     }[prof.action]

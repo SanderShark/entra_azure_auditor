@@ -28,7 +28,14 @@ from ..models import (
     TenantSnapshot,
     User,
 )
-from .client import GraphClient, GraphError, GraphNotFoundError, GraphPermissionError
+from .client import (
+    GraphAuthError,
+    GraphClient,
+    GraphError,
+    GraphNotFoundError,
+    GraphPermissionError,
+    GraphRetryExhaustedError,
+)
 
 T = TypeVar("T")
 
@@ -305,12 +312,17 @@ class TenantCollector:
         fn: Callable[[], T],
         default: T | None,
         *,
-        catch: tuple[type[GraphError], ...] = (GraphPermissionError, GraphNotFoundError),
+        fatal: tuple[type[GraphError], ...] = (GraphAuthError, GraphRetryExhaustedError),
     ) -> T | None:
-        """Run ``fn``; on a permission/licence problem, warn and return ``default``."""
+        """Run ``fn``. If this one data source fails (missing permission or licence, an
+        unsupported query, ...), record a warning and return ``default`` so the rest of the
+        audit still runs. Auth failures and exhausted retries mean Graph itself is unusable,
+        so those (``fatal``) still abort the run."""
         try:
             return fn()
-        except catch as exc:
+        except fatal:
+            raise
+        except GraphError as exc:
             self.warnings.append(f"{label}: skipped ({exc})")
             return default
 
@@ -335,16 +347,22 @@ class TenantCollector:
     # -- roles -------------------------------------------------------------- #
 
     def role_definitions(self) -> list[RoleDefinition] | None:
+        """Role definitions. Microsoft's ``isPrivileged`` flag is not on the v1.0 endpoint, so
+        try beta first and fall back to v1.0 without it (our own critical-role list in
+        ``checks/_common.py`` still identifies the important roles)."""
+        path = "/roleManagement/directory/roleDefinitions"
+
+        def fetch(url: str, select: list[str]) -> list[RoleDefinition]:
+            return [parse_role_definition(r) for r in self._graph.get_all(url, select=select)]
+
+        try:
+            return fetch(f"{self._beta}{path}", ["id", "displayName", "isBuiltIn", "isPrivileged"])
+        except (GraphAuthError, GraphRetryExhaustedError):
+            raise
+        except GraphError:
+            pass  # beta unavailable or property unsupported: use v1.0
         return self._safe(
-            "role definitions",
-            lambda: [
-                parse_role_definition(r)
-                for r in self._graph.get_all(
-                    "/roleManagement/directory/roleDefinitions",
-                    select=["id", "displayName", "isBuiltIn", "isPrivileged"],
-                )
-            ],
-            None,
+            "role definitions", lambda: fetch(path, ["id", "displayName", "isBuiltIn"]), None
         )
 
     def role_assignments(
@@ -609,8 +627,7 @@ class TenantCollector:
             return out
 
         # Beta can 400/403/404 depending on tenant; any GraphError degrades gracefully.
-        result = self._safe("service principal sign-in activity (beta)", fetch, None,
-                            catch=(GraphError,))
+        result = self._safe("service principal sign-in activity (beta)", fetch, None, fatal=())
         self.sp_sign_in_data_available = result is not None
         return result or {}
 

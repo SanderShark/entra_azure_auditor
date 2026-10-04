@@ -30,10 +30,11 @@ from typing import Iterable
 
 from pydantic import BaseModel
 
+from .ca_report import render_html, render_mermaid_markdown
 from .engine import AuditRun
 
 SCHEMA_VERSION = 1
-SUPPORTED_FORMATS = ("json", "csv")
+SUPPORTED_FORMATS = ("json", "csv", "html", "mermaid")
 
 FINDING_COLUMNS = [
     "severity", "check_id", "resource_type", "resource_name", "resource_id",
@@ -181,6 +182,20 @@ def write_policies_csv(run: AuditRun, path: Path) -> Path:
 
 
 # --------------------------------------------------------------------------- #
+# Conditional Access report (HTML + Mermaid)
+# --------------------------------------------------------------------------- #
+
+def write_ca_html(run: AuditRun, path: Path, include_disabled: bool = True) -> Path:
+    _write_private(Path(path), render_html(run, include_disabled))
+    return Path(path)
+
+
+def write_ca_mermaid(run: AuditRun, path: Path, include_disabled: bool = False) -> Path:
+    _write_private(Path(path), render_mermaid_markdown(run, include_disabled))
+    return Path(path)
+
+
+# --------------------------------------------------------------------------- #
 # All formats at once
 # --------------------------------------------------------------------------- #
 
@@ -190,6 +205,8 @@ def write_reports(
     """Write the requested formats into ``directory``; returns the paths written.
 
     ``csv`` produces a findings file, plus a policies file when the run has CA policies.
+    ``html`` and ``mermaid`` are Conditional Access reports and are skipped if the run
+    has no CA policies.
     """
     formats = [f.strip().lower() for f in formats]
     bad = [f for f in formats if f not in SUPPORTED_FORMATS]
@@ -204,6 +221,10 @@ def write_reports(
         written.append(write_findings_csv(run, directory / f"{stem}-findings.csv"))
         if run.policies:
             written.append(write_policies_csv(run, directory / f"{stem}-policies.csv"))
+    if run.policies and "html" in formats:
+        written.append(write_ca_html(run, directory / f"{stem}-ca-report.html"))
+    if run.policies and "mermaid" in formats:
+        written.append(write_ca_mermaid(run, directory / f"{stem}-ca-diagram.md"))
     return written
 
 

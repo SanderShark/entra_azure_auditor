@@ -264,7 +264,7 @@ def run_audit(
     try:
         snapshot = TenantCollector(graph, progress=progress).collect(tenant_id, sections)
     except (GraphError, AuthenticationError) as exc:
-        log.error("collection failed: %s", exc)
+        log.info("collection failed: %s", exc)
         return AuditRun(
             id=run_id, tenant_id=tenant_id, identity=identity, status=RunStatus.FAILED,
             started_at=started, finished_at=clock(), checks=names, config=asdict(cfg),
