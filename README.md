@@ -1,206 +1,147 @@
-# Entra ID / Azure Security Auditor 🛡️
+# Entra Security Auditor
 
-A high-performance Python security auditing and analysis tool for Microsoft Entra ID (formerly Azure AD). This tool securely authenticates via Microsoft Graph, extracts core identity and access configurations, performs deep heuristic analysis—including robust **Conditional Access & MFA policy profiling**—and generates structured audit reports.
+A **read-only** command line tool that audits a Microsoft Entra ID (Azure AD) tenant through the
+Microsoft Graph API and explains what it finds.
 
-Currently still in development, but this is the idea below:
+It checks for:
+
+- **Inactive accounts**: members, guests, never-signed-in accounts, stale guest invitations
+- **Privileged accounts**: Global Admin count, admins without MFA or with only weak methods, permanent
+  (non-PIM) assignments, guests/apps holding roles, inactive or synced admins
+- **MFA and Conditional Access**: registration gaps, missing baseline policies (MFA for all users and
+  admins, legacy-auth block, ...), and a **plain-English breakdown of every CA policy** (who it covers,
+  who is excluded, what it applies to, what it does)
+- **Stale or risky apps**: expired/expiring credentials, inactive service principals, abandoned apps,
+  apps with powerful Graph permissions
+
+Results are printed in the terminal and can be exported as JSON or CSV.
+
+> The tool only needs **read** permissions and never changes your tenant.
 
 ---
 
-## 🌟 Key Features
+## Quick start
 
-- **Deep Conditional Access Analysis**: Goes beyond basic baseline checks. Evaluates policy conditions, actions (Grant/Block), risk triggers, exclusions, and auth flows (e.g., Device Code, Legacy Auth).
-- **Inactivity & Stale App Detection**: Tracks inactive member accounts, guests, and unutilized Service Principals via Graph sign-in logs and beta telemetry.
-- **Privileged Identity Inspection**: Evaluates PIM (Privileged Identity Management) assignments, direct/group-based role assignments, and permanent vs. time-bound access.
-- **Resilient Microsoft Graph Ingestion**: Handles Microsoft Graph throttling, API pagination, and feature downgrades gracefully (e.g., fallback when Entra ID P2/P1 features are missing).
-- **Multi-Format Reporting**: Generates granular audit reports in **JSON** or **CSV**, exposes a native **REST API**, and persists snapshot data in **PostgreSQL**.
-- **Automated Testing Suite**: Includes comprehensive unit tests for pure parsers, baseline evaluators, and API endpoints.
+Requires Python 3.10+.
 
----
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt    # or: pip install -e .   (adds the `auditor` command)
 
-## 🏗️ Architecture & Project Structure
+cp .env.example .env               # then edit it (see "Connect it to your tenant")
+python -m entra_auditor permissions   # check your app has the access it needs
+python -m entra_auditor run           # run an audit
+python -m entra_auditor menu          # or use the interactive menu
+```
 
-```text
+After `pip install -e .` you can type `auditor ...` instead of `python -m entra_auditor ...`.
+
+## Connect it to your tenant
+
+Register an app in **Entra admin center -> App registrations -> New registration** (single tenant).
+Note the **Application (client) ID** and **Directory (tenant) ID** and put them in `.env`.
+
+Choose how the tool signs in:
+
+### Option A: app registration (unattended; best for scheduled runs)
+
+1. **Certificates & secrets**: add a client secret, or (better) upload a certificate.
+2. **API permissions -> Add -> Microsoft Graph -> Application permissions**, add the permissions in the
+   table below, then click **Grant admin consent**.
+3. In `.env`: `AUDITOR_AUTH_MODE=app` plus `AZURE_CLIENT_SECRET` (or the certificate variables).
+
+### Option B: sign in as yourself (interactive)
+
+1. **Authentication -> Add a platform -> Mobile and desktop applications**, add the redirect URI
+   `http://localhost` (browser mode), and set **Allow public client flows = Yes** (device-code mode).
+2. **API permissions -> Add -> Microsoft Graph -> Delegated permissions**: the same names as below, then
+   grant admin consent.
+3. In `.env`: `AUDITOR_AUTH_MODE=device` (or `browser`). Leave the secret empty.
+4. Run `auditor login`. Sign in with an account that has **Global Reader** (read-only is enough; a
+   Global Admin is more access than an audit needs).
+
+In user mode your access is the app's permissions **intersected with your own roles**, so a normal user
+will see "data unavailable" for things like Conditional Access.
+
+### Permissions
+
+| Permission | Used for |
+|---|---|
+| `User.Read.All` | users |
+| `AuditLog.Read.All` | sign-in activity (inactive accounts, apps) |
+| `Reports.Read.All` | MFA registration report |
+| `RoleManagement.Read.Directory` | directory role assignments |
+| `RoleEligibilitySchedule.Read.Directory` | PIM eligible roles |
+| `RoleAssignmentSchedule.Read.Directory` | permanent vs time-bound assignments |
+| `Policy.Read.All` | Conditional Access, security defaults |
+| `Application.Read.All` | app registrations, service principals |
+| `Group.Read.All` | names/sizes of groups used in CA exclusions and role groups |
+
+Some data needs **Entra ID P1/P2** (sign-in activity, Conditional Access, PIM). Without it the tool tells
+you which checks were skipped instead of failing. `auditor permissions` shows what your token has.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `auditor run` | Run an audit. `--checks inactive,privileged,mfa_ca,stale_apps`, `--out ./reports`, `--fail-on high` |
+| `auditor findings [RUN]` | Browse findings: `--min-severity high`, `--check ADMIN`, `--search bob`, `--detail` |
+| `auditor policies [RUN]` | Conditional Access overview; `--name "MFA"` gives the full plain-English breakdown |
+| `auditor compare [OLD] [NEW]` | New, resolved and changed findings between two runs |
+| `auditor runs` / `export` | List saved runs / write JSON and CSV reports |
+| `auditor permissions` | Needed vs granted Graph permissions |
+| `auditor login` / `logout` / `whoami` | Manage the user sign-in (user modes) |
+| `auditor menu` | Arrow-key menu over all of the above |
+
+`RUN` is `latest` (default), `previous`, a run-id prefix, or a `.json` file. Runs are saved to
+`~/.entra_auditor/runs` (override with `AUDITOR_RUNS_DIR`).
+
+**Exit codes:** `0` ok, `1` the audit could not run, `2` findings at or above `--fail-on` exist, which
+makes it easy to gate a pipeline:
+
+```bash
+auditor run --checks mfa_ca,privileged --fail-on high --out reports
+```
+
+Thresholds (inactivity days, max Global Admins, ...) live in `AuditConfig`
+(`entra_auditor/checks/_common.py`); the common ones are CLI flags (`--inactive-days`, `--guest-days`,
+`--admin-days`).
+
+## Security notes
+
+- **Never commit secrets.** `.env`, certificates, token caches and audit output are in `.gitignore`.
+  If a secret ever lands in git history, rotate it. Deleting the file is not enough.
+- **Reports are sensitive.** They map your tenant's weaknesses. Files are created owner-only (`0600`);
+  keep them out of public places, tickets, and chat.
+- In user modes, the token cache (`~/.entra_auditor/token_cache.json`) contains refresh tokens. Treat it
+  like a password and use `auditor logout` when finished.
+- Prefer a **certificate** over a client secret, and keep the app registration read-only.
+- CSV exports neutralise spreadsheet formulas (cells beginning `=`, `+`, `-`, `@` get a leading `'`).
+
+## Project layout
+
+```
 entra_auditor/
-├── graph/
-│   ├── client.py           # MSAL authentication & HTTP wrapper
-│   └── collectors.py       # Async/Sync Graph API query engine & paginators
-├── models.py               # Pure Pydantic data models & snapshot containers
-├── checks/
-│   ├── _common.py          # Shared audit configurations & severity constants
-│   ├── ca_analysis.py      # Core Conditional Access evaluator & condition parser
-│   ├── inactive_users.py   # User inactivity & stale guest checking logic
-│   ├── privileged.py       # PIM & privileged role assignment evaluator
-│   ├── mfa_ca.py           # MFA registration & CA baseline security rules
-│   └── stale_apps.py       # Service principal sign-in & secret expiration rules
-├── storage/                # PostgreSQL persistence layer
-├── api/                    # REST API endpoints (FastAPI)
-└── tests/                  # Pytest test suite for parsers, rules, and mocks
+├── auth.py             # MSAL: app registration or user sign-in
+├── graph/client.py     # httpx wrapper: paging, retry on 429/503, $select
+├── graph/collectors.py # users, roles, MFA, CA policies, apps, service principals
+├── models.py           # Pydantic models, incl. Finding
+├── checks/             # inactive_users, privileged, mfa_ca (+ ca_analysis), stale_apps
+├── engine.py           # runs selected checks, produces an AuditRun, diffs runs
+├── reports.py          # JSON / CSV writers and the local run store
+└── cli.py              # Typer + Rich, interactive menu
 ```
 
-### Core Design Principles
+**Roadmap:** PostgreSQL storage (SQLAlchemy + Alembic), a FastAPI REST layer, automated tests and CI,
+Docker Compose.
 
-1. **Separation of Collection & Finding Logic**: Graph collection outputs pure models (`TenantSnapshot`). Finding checks run statically on snapshots without making active network calls.
-2. **Graceful Degradation (`None` vs Empty List)**: If an API endpoint fails due to missing licenses or 403 Forbidden permissions, the model attribute is set to `None` rather than `[]`. Checks distinguish between "No policies present" vs "Could not read policies".
-
----
-
-## 🧠 Expanded Conditional Access (CA) Engine
-
-Most security tools only check if an MFA policy exists. **Entra Security Auditor** parses and profiles every policy condition to expose blind spots, bypasses, and risk configurations.
-
-### Key Policy Inspection Capabilities
-
-| Capability | What It Analyzes | Why It Matters |
-| :--- | :--- | :--- |
-| **Action & Grant Controls** | Identifies whether access is **Blocked**, requires **MFA**, or uses an **Authentication Strength** (e.g., FIDO2 / Phishing-Resistant). | Distinguishes between weak legacy MFA and phishing-resistant controls. |
-| **Exclusions & Bypasses** | Extracts explicit User, Group, Role, and Directory Exclusions. | Prevents silent bypasses where a Global Admin or group avoids baseline controls. |
-| **Condition Analysis** | Analyzes targeted Apps, Platforms, Locations, Client Types, and Risk Levels (User Risk / Sign-in Risk). | Surfaces gaps like unhandled legacy auth, unprotected Azure Management interfaces, or missing device controls. |
-| **Auth-Flow Detection** | Flags high-risk authentication flows such as **Device Code Flow** or **Transfer Token Flow**. | Detects vulnerability to modern phishing and device code phishing attacks. |
-
-### Baseline Security Rules (`mfa_ca.py`)
-
-The auditor evaluates policies against declarative security baselines:
-- `CA_NO_MFA_ALL_USERS`: All users / All apps MFA enforcement.
-- `CA_NO_MFA_ADMINS`: Strict MFA requirement across all administrative roles.
-- `CA_NO_LEGACY_AUTH_BLOCK`: Complete blockage of legacy authentication protocols.
-- `CA_NO_AZURE_MANAGEMENT_MFA`: Mandatory MFA on Azure Portal, CLI, and ARM interfaces.
-- `CA_NO_SECURITY_INFO_PROTECTION`: Protection of MFA method registration flows.
-- `CA_EXCLUDED_FROM_ALL_POLICIES`: Cross-policy correlation identifying principals excluded from **all** enforced policies.
-
----
-
-## 📋 Required Entra ID Permissions
-
-To run a complete tenant audit, register an application in Entra ID with the following **Application Permissions**:
-
-| Permission Name | Type | Usage |
-| :--- | :--- | :--- |
-| `User.Read.All` | Application | Read user profiles & object details |
-| `AuditLog.Read.All` | Application | Audit sign-in logs and user activity (`signInActivity`) |
-| `Directory.Read.All` | Application | Read directory roles, groups, and service principals |
-| `Policy.Read.All` | Application | Parse Conditional Access policies & Security Defaults |
-| `RoleAssignmentSchedule.Read.Directory` | Application | Read PIM (Privileged Identity Management) schedules |
-| `Reports.Read.All` | Application | Access service principal sign-ins and MFA registration reports |
-
-> **Note**: Service principal sign-in telemetry uses the Microsoft Graph `/beta` endpoint (`servicePrincipalSignInActivities`). If unavailable, `sp_sign_in_data_available` is marked `False` and skips false-positive flags.
-
----
-
-## 🚀 Quickstart Guide
-
-### 1. Installation
-
-Clone the repository and install dependencies using `pip`:
+## Development
 
 ```bash
-git clone https://github.com/your-org/entra-auditor.git
-cd entra-auditor
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install package and dependencies
-pip install -e .
+pip install -r requirements-dev.txt
+ruff check . && mypy entra_auditor && pytest
 ```
 
-### 2. Environment Setup
-
-Configure your tenant credentials in an `.env` file or export them directly:
-
-```env
-AZURE_TENANT_ID="your-tenant-id-guid"
-AZURE_CLIENT_ID="your-app-registration-client-id"
-AZURE_CLIENT_SECRET="your-app-registration-client-secret"
-DATABASE_URL="postgresql://user:password@localhost:5432/entra_audit"
-```
-
-### 3. Basic Execution (Python API)
-
-Collect tenant metrics and output findings:
-
-```python
-from datetime import datetime, timezone
-from entra_auditor.graph import GraphClient, create_token_provider
-from entra_auditor.graph.collectors import TenantCollector
-from entra_auditor.checks.mfa_ca import check_mfa_ca
-from entra_auditor.checks._common import AuditConfig
-
-tenant_id = "your-tenant-id-guid"
-provider = create_token_provider()
-
-# 1. Collect Snapshot
-with GraphClient(provider) as graph:
-    snapshot = TenantCollector(graph, progress=print).collect(tenant_id)
-
-# 2. Execute Audit Checks
-now = datetime.now(timezone.utc)
-cfg = AuditConfig()
-
-findings = check_mfa_ca(snapshot, now=now, cfg=cfg)
-
-# 3. Print Findings Summary
-for finding in findings:
-    print(f"[{finding.severity.upper()}] {finding.check_id}: {finding.title}")
-```
-
-### 4. Running Tests
-
-Run unit tests and parser validations:
-
-```bash
-pytest tests/
-```
-
----
-
-## 📊 Output Formats
-
-Findings are structured around standardized severity levels (`critical`, `high`, `medium`, `low`, `info`).
-
-### Example JSON Finding Output
-
-```json
-{
-  "check_id": "CA_EXCLUDED_FROM_ALL_POLICIES",
-  "severity": "high",
-  "resource_type": "tenant",
-  "resource_id": "00000000-0000-0000-0000-000000000000",
-  "title": "2 account(s)/group(s) are excluded from every enforced all-users Conditional Access policy",
-  "evidence": {
-    "policies_compared": [
-      "Require MFA for All Users",
-      "Block Legacy Authentication"
-    ],
-    "excluded": [
-      "BreakGlass Admin 1 (User)",
-      "Legacy Service Account Group (Group)"
-    ],
-    "user_ids": ["a1b2c3d4-0000-0000-0000-000000000000"],
-    "group_ids": ["e5f6g7h8-0000-0000-0000-000000000000"]
-  },
-  "remediation": "Fine only for monitored break-glass accounts (alert on every sign-in). Otherwise remove the exclusions."
-}
-```
-
----
-
-## 🛠️ REST API & Storage
-
-The included REST service provides endpoints to trigger background tenant audits, query historical runs, and pull findings over HTTP:
-
-```bash
-# Start REST service
-uvicorn entra_auditor.api.main:app --reload
-
-# Trigger an audit via API
-curl -X POST "http://localhost:8000/api/v1/audit/trigger" \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id": "your-tenant-id-guid"}'
-```
-
----
-
-## 📄 License
-
-This project is licensed under the [MIT License](LICENSE).
+Checks are pure functions of a `TenantSnapshot`, so they can be unit-tested without Graph or a database
+(`respx` is included for testing the Graph client).
