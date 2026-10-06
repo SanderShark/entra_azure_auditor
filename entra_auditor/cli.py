@@ -682,32 +682,22 @@ def _pick_run(q, prompt: str = "Choose a run") -> Optional[Path]:
     return q.select(prompt, choices=choices).ask()
 
 
-# questionary treats `Choice(value=None)` as "use the title text as the value", so menu
-# choices that mean "none"/"back" need explicit sentinel strings instead of None.
-_BACK = "__back__"
-_ALL = "__all__"
-
-
 def _browse_findings(q, run_: AuditRun) -> None:
-    level = q.select("Show which severities?", choices=[
-        q.Choice("Everything", value=_ALL), q.Choice("High and above", value="high"),
+    label = q.select("Show which severities?", choices=[
+        q.Choice("Everything", value=None), q.Choice("High and above", value="high"),
         q.Choice("Medium and above", value="medium"), q.Choice("Critical only", value="critical"),
-        q.Choice("<- Back", value=_BACK),
     ]).ask()
-    if level in (None, _BACK):  # None = Ctrl-C
-        return
-    floor = None if level == _ALL else level
     while True:
-        items = filter_findings(run_, floor)[:500]
+        items = filter_findings(run_, label)[:500]
         if not items:
             console.print("[green]No findings at that level.[/]")
             return
         picked = q.select(
             f"{len(items)} finding(s). Select one for details:",
             choices=[q.Choice(f"[{f.severity:<8}] {f.title[:100]}", value=i) for i, f in enumerate(items)]
-                    + [q.Choice("<- Back", value=_BACK)],
+                    + [q.Choice("<- Back", value=None)],
         ).ask()
-        if picked in (None, _BACK):
+        if picked is None:
             return
         print_finding_detail(items[picked])
         console.input("[dim]Press Enter to continue[/]")
@@ -722,8 +712,8 @@ def _browse_policies(q, run_: AuditRun) -> None:
         picked = q.select("Explain which policy?", choices=[
             q.Choice(f"{p.name}  ({STATE_LABEL.get(p.state, (p.state,))[0]}, {ACTION_LABEL[p.action][0]})",
                      value=i) for i, p in enumerate(run_.policies)
-        ] + [q.Choice("<- Back", value=_BACK)]).ask()
-        if picked in (None, _BACK):
+        ] + [q.Choice("<- Back", value=None)]).ask()
+        if picked is None:
             return
         print_policy_detail(run_.policies[picked])
         console.input("[dim]Press Enter to continue[/]")

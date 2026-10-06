@@ -11,14 +11,12 @@ from .inactive_users import check_inactive_users
 from .mfa_ca import check_mfa_ca
 from .privileged import check_privileged
 from .stale_apps import check_stale_apps
-from .stale_groups import check_stale_groups
 
 CHECKS: dict[str, Check] = {
     "inactive": check_inactive_users,
     "privileged": check_privileged,
     "mfa_ca": check_mfa_ca,
     "stale_apps": check_stale_apps,
-    "groups": check_stale_groups,
 }
 
 

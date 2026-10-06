@@ -40,7 +40,6 @@ CHECK_SECTIONS: dict[str, set[str]] = {
     "privileged": {"roles", "mfa"},
     "mfa_ca": {"ca", "mfa", "role_defs"},
     "stale_apps": {"apps"},
-    "groups": {"groups", "ca"},  # "ca" so groups used by Conditional Access count as in use
 }
 
 # Graph permissions each check reads (same names for application and delegated access).
@@ -56,7 +55,6 @@ REQUIRED_PERMISSIONS: dict[str, set[str]] = {
         "Group.Read.All", "RoleManagement.Read.Directory",
     },
     "stale_apps": {"Application.Read.All", "AuditLog.Read.All"},
-    "groups": {"Group.Read.All", "Directory.Read.All", "Policy.Read.All"},
 }
 
 
@@ -170,7 +168,6 @@ def _inventory(snapshot: TenantSnapshot) -> dict[str, int | None]:
         "conditional_access_policies": count(snapshot.ca_policies),
         "applications": count(snapshot.applications),
         "service_principals": count(snapshot.service_principals),
-        "groups": count(snapshot.groups),
     }
 
 
