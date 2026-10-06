@@ -13,7 +13,6 @@ import logging
 import random
 import time
 import uuid
-from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -65,19 +64,6 @@ class GraphNotFoundError(GraphError):
 
 class GraphRetryExhaustedError(GraphError):
     """Still throttled / failing after all retries."""
-
-
-@dataclass(frozen=True)
-class GraphResponse:
-    """Result of a write call: status, headers (lower-cased names) and the JSON body, if any."""
-    status_code: int
-    headers: dict[str, str] = field(default_factory=dict)
-    body: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def location(self) -> str | None:
-        """Operation URL for long-running calls (e.g. password reset returns 202 + Location)."""
-        return self.headers.get("location")
 
 
 # --------------------------------------------------------------------------- #
@@ -182,49 +168,6 @@ class GraphClient:
         """Like ``get_paged`` but returns a list."""
         return list(self.get_paged(path, **kwargs))
 
-    # -- writes ------------------------------------------------------------- #
-    # Retry rules differ from reads: a 429 is always safe to resend (it was rejected before
-    # being processed), but after a 5xx or network error a POST may already have been applied,
-    # so POSTs are never re-sent in that case. PATCH/DELETE/PUT are idempotent and are.
-
-    def request(
-        self,
-        method: str,
-        path: str,
-        *,
-        json: Mapping[str, Any] | None = None,
-        params: Mapping[str, str] | None = None,
-        headers: Mapping[str, str] | None = None,
-        idempotent: bool | None = None,
-    ) -> GraphResponse:
-        method = method.upper()
-        if idempotent is None:
-            idempotent = method != "POST"
-        response = self._request(
-            method, self._url(path), params=params, headers=headers, json=json, idempotent=idempotent
-        )
-        body: dict[str, Any] = {}
-        if response.content:
-            try:
-                parsed = response.json()
-                body = parsed if isinstance(parsed, dict) else {"value": parsed}
-            except ValueError:
-                body = {}
-        return GraphResponse(
-            status_code=response.status_code,
-            headers={k.lower(): v for k, v in response.headers.items()},
-            body=body,
-        )
-
-    def post(self, path: str, json: Mapping[str, Any] | None = None, **kwargs: Any) -> GraphResponse:
-        return self.request("POST", path, json=json, **kwargs)
-
-    def patch(self, path: str, json: Mapping[str, Any], **kwargs: Any) -> GraphResponse:
-        return self.request("PATCH", path, json=json, **kwargs)
-
-    def delete(self, path: str, **kwargs: Any) -> GraphResponse:
-        return self.request("DELETE", path, **kwargs)
-
     # -- internals ---------------------------------------------------------- #
 
     def _url(self, path: str) -> str:
@@ -266,14 +209,9 @@ class GraphClient:
         *,
         params: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
-        json: Mapping[str, Any] | None = None,
-        idempotent: bool = True,
     ) -> httpx.Response:
         request_id = str(uuid.uuid4())  # same id across retries, for Microsoft support
         attempt = 0
-        # 429 means "rejected before processing": always safe to resend. 5xx and network
-        # errors are ambiguous for a write, so non-idempotent calls only retry on 429.
-        retry_statuses = RETRY_STATUSES if idempotent else frozenset({429})
 
         while True:
             # Fetch the token per attempt: the provider caches, and a long
@@ -286,15 +224,8 @@ class GraphClient:
             }
 
             try:
-                response = self._http.request(
-                    method, url, params=params, headers=call_headers, json=json
-                )
+                response = self._http.request(method, url, params=params, headers=call_headers)
             except httpx.TransportError as exc:  # timeouts, connection resets, DNS
-                if not idempotent:
-                    raise GraphError(
-                        f"Network error; the request may or may not have been applied: {exc}",
-                        url=url,
-                    ) from exc
                 if attempt >= self._max_retries:
                     raise GraphRetryExhaustedError(
                         f"Network error after {attempt} retries: {exc}", url=url
@@ -303,7 +234,7 @@ class GraphClient:
                 attempt += 1
                 continue
 
-            if response.status_code in retry_statuses:
+            if response.status_code in RETRY_STATUSES:
                 if attempt >= self._max_retries:
                     raise self._error_from(response, url, exhausted=True)
                 self._wait(attempt, response.headers.get("Retry-After"),

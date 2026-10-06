@@ -88,6 +88,7 @@ you which checks were skipped instead of failing. `auditor permissions` shows wh
 | `auditor run` | Run an audit. `--checks inactive,privileged,mfa_ca,stale_apps`, `--out ./reports`, `--fail-on high` |
 | `auditor findings [RUN]` | Browse findings: `--min-severity high`, `--check ADMIN`, `--search bob`, `--detail` |
 | `auditor policies [RUN]` | Conditional Access overview; `--name "MFA"` gives the full plain-English breakdown |
+| `auditor ca-report [RUN]` | Self-contained **HTML report** of your Conditional Access policies (policy map, gaps, searchable cards). `--open`, `--mermaid` |
 | `auditor compare [OLD] [NEW]` | New, resolved and changed findings between two runs |
 | `auditor runs` / `export` | List saved runs / write JSON and CSV reports |
 | `auditor permissions` | Needed vs granted Graph permissions |
@@ -103,6 +104,12 @@ makes it easy to gate a pipeline:
 ```bash
 auditor run --checks mfa_ca,privileged --fail-on high --out reports
 ```
+
+**Conditional Access report.** `auditor ca-report --open` writes one offline HTML page: an overview, the
+baseline gaps, a who -> policy -> outcome map of every policy, and searchable cards that explain each policy
+in plain English (who, exclusions with group sizes, apps, conditions, action, concerns and fixes). Add
+`--mermaid` for a Markdown file with the same diagram as Mermaid source (GitHub renders it), or use
+`--formats json,csv,html,mermaid` with `auditor run`/`export`. The HTML loads nothing from the network.
 
 Thresholds (inactivity days, max Global Admins, ...) live in `AuditConfig`
 (`entra_auditor/checks/_common.py`); the common ones are CLI flags (`--inactive-days`, `--guest-days`,
@@ -128,6 +135,7 @@ entra_auditor/
 ├── graph/collectors.py # users, roles, MFA, CA policies, apps, service principals
 ├── models.py           # Pydantic models, incl. Finding
 ├── checks/             # inactive_users, privileged, mfa_ca (+ ca_analysis), stale_apps
+├── ca_report.py        # Conditional Access HTML report and Mermaid diagram
 ├── engine.py           # runs selected checks, produces an AuditRun, diffs runs
 ├── reports.py          # JSON / CSV writers and the local run store
 └── cli.py              # Typer + Rich, interactive menu

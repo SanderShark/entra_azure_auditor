@@ -277,73 +277,6 @@ class ServicePrincipal(BaseModel):
         return self.service_principal_type == "ManagedIdentity"
 
 
-# ----------------------------------------------------------------- groups --
-
-GROUP_KIND_LABELS = {
-    "microsoft365": "Microsoft 365",
-    "security": "Security",
-    "mail_enabled_security": "Mail-enabled security",
-    "distribution": "Distribution list",
-    "other": "Other",
-}
-
-
-def classify_group(group_types: list[str], mail_enabled: bool, security_enabled: bool) -> str:
-    """Which kind of group this is. Mail-enabled security groups and distribution lists are
-    managed in Exchange (they have no Entra owners), so audits treat them separately."""
-    if "Unified" in group_types:
-        return "microsoft365"
-    if mail_enabled and security_enabled:
-        return "mail_enabled_security"
-    if mail_enabled:
-        return "distribution"
-    if security_enabled:
-        return "security"
-    return "other"
-
-
-class DirectoryGroup(BaseModel):
-    """A group in the tenant, with just enough relationship data to judge stale/unowned/empty."""
-    id: str
-    display_name: str | None = None
-    description: str | None = None
-    mail: str | None = None
-    mail_enabled: bool = False
-    security_enabled: bool = False
-    group_types: list[str] = Field(default_factory=list)
-    created_at: datetime | None = None
-    renewed_at: datetime | None = None
-    membership_rule: str | None = None      # set on dynamic-membership groups
-    on_prem_synced: bool = False
-    is_role_assignable: bool = False
-    has_licenses: bool = False              # group-based licensing
-    is_team: bool = False                   # Microsoft Teams team
-    visibility: str | None = None
-
-    # Relationship counts. None = unknown (never guess: unknown is never reported as "empty").
-    owner_count: int | None = None
-    user_member_count: int | None = None    # users reachable through membership (0 = verified none)
-    other_member_count: int | None = None   # direct non-user members (devices, groups, apps)
-
-    # Usage signals, looked up only for candidate (unowned/empty) groups.
-    usage_checked: bool = False
-    app_role_assignments: int = 0           # apps this group is assigned to
-    nested_in_groups: int = 0               # groups that contain this group
-    directory_roles: list[str] = Field(default_factory=list)
-
-    @property
-    def kind(self) -> str:
-        return classify_group(self.group_types, self.mail_enabled, self.security_enabled)
-
-    @property
-    def is_dynamic(self) -> bool:
-        return "DynamicMembership" in self.group_types
-
-    @property
-    def is_exchange_managed(self) -> bool:
-        return self.kind in ("mail_enabled_security", "distribution")
-
-
 # --------------------------------------------------------------- snapshot --
 
 class TenantSnapshot(BaseModel):
@@ -362,6 +295,4 @@ class TenantSnapshot(BaseModel):
     applications: list[Application] | None = None
     service_principals: list[ServicePrincipal] | None = None
     sp_sign_in_data_available: bool = False
-    groups: list[DirectoryGroup] | None = None
-    group_usage_available: bool = False
     warnings: list[str] = Field(default_factory=list)

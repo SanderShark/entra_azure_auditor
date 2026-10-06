@@ -52,29 +52,7 @@ DEFAULT_USER_SCOPES = (
     "Policy.Read.All",
     "Application.Read.All",
 )
-# Scopes for the identity toolkit (`auditor id|group|pim ...`). These WRITE to the tenant, so
-# they are requested only by toolkit commands; the read-only audit never asks for them.
-# Override with AUDITOR_TOOLKIT_SCOPES to drop capabilities you don't want (e.g. remove
-# UserAuthenticationMethod.ReadWrite.All if you never reset passwords or edit cert IDs).
-TOOLKIT_SCOPES = (
-    "User.ReadWrite.All",                      # edit users, enable/disable
-    "Group.ReadWrite.All",                     # add/remove group owners (members need less, owners don't)
-    "Directory.Read.All",                      # read users, groups, memberships
-    "UserAuthenticationMethod.ReadWrite.All",  # password reset, auth methods
-    "User.RevokeSessions.All",                 # revoke sign-in sessions
-    "RoleManagement.Read.Directory",           # show a user's roles
-    "RoleEligibilitySchedule.Read.Directory",  # list roles you can activate (PIM)
-    "RoleAssignmentSchedule.ReadWrite.Directory",  # activate/deactivate your own roles (PIM)
-    "AuditLog.Read.All",                       # last sign-in in identity profiles
-)
 DEFAULT_CACHE_PATH = Path.home() / ".entra_auditor" / "token_cache.json"
-
-
-def toolkit_scopes(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
-    """Toolkit scopes: ``AUDITOR_TOOLKIT_SCOPES`` (space/comma separated) or the defaults."""
-    env = os.environ if env is None else env
-    raw = env.get("AUDITOR_TOOLKIT_SCOPES", "").replace(",", " ").split()
-    return tuple(raw) or TOOLKIT_SCOPES
 
 
 class AuthenticationError(Exception):
@@ -347,12 +325,12 @@ class UserTokenProvider:
         accounts = self._app.get_accounts()
         return accounts[0] if accounts else None
 
-    def _acquire_silent(self, force_refresh: bool = False) -> dict | None:
+    def _acquire_silent(self) -> dict | None:
         account = self._first_account()
         if account is None:
             return None
         return self._app.acquire_token_silent(
-            self._settings.effective_scopes, account=account, force_refresh=force_refresh
+            self._settings.effective_scopes, account=account
         )
 
     def _acquire_interactive(self) -> dict:
@@ -376,21 +354,6 @@ class UserTokenProvider:
                     raise AuthenticationError(
                         "No cached sign-in. Run the login command interactively first."
                     )
-                result = self._acquire_interactive()
-            self._save_cache()
-        return _token_from_result(result)
-
-    def refresh(self) -> str:
-        """Get a brand-new token from Entra ID instead of the cached one.
-
-        Used after PIM activation: directory roles can be baked into a token's ``wids`` claim,
-        so a token issued before activation may not reflect the new role.
-        """
-        with self._lock:
-            result = self._acquire_silent(force_refresh=True)
-            if not (result and "access_token" in result):
-                if not self._allow_interactive:
-                    raise AuthenticationError("Could not refresh the token; sign in again.")
                 result = self._acquire_interactive()
             self._save_cache()
         return _token_from_result(result)

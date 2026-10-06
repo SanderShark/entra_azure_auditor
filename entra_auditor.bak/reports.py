@@ -30,19 +30,14 @@ from typing import Iterable
 
 from pydantic import BaseModel
 
-from .ca_report import render_html, render_mermaid_markdown
 from .engine import AuditRun
 
 SCHEMA_VERSION = 1
-SUPPORTED_FORMATS = ("json", "csv", "html", "mermaid")
+SUPPORTED_FORMATS = ("json", "csv")
 
 FINDING_COLUMNS = [
     "severity", "check_id", "resource_type", "resource_name", "resource_id",
     "title", "remediation", "evidence", "fingerprint",
-]
-GROUP_COLUMNS = [
-    "group", "group_id", "kind", "issues", "worst_severity", "owners", "user_members", "other_members",
-    "created", "age_days", "synced_from_ad", "dynamic_rule", "in_use_by", "remediation",
 ]
 POLICY_COLUMNS = [
     "policy_id", "name", "state", "action", "summary", "applies_to", "excluded",
@@ -171,42 +166,6 @@ def render_findings_csv(run: AuditRun) -> str:
     return _to_csv(FINDING_COLUMNS, findings_rows(run))
 
 
-def groups_rows(run: AuditRun) -> list[dict]:
-    """One row per flagged group (the findings for a group are merged), worst first."""
-    from .checks._common import SEVERITY_ORDER
-
-    merged: dict[str, dict] = {}
-    for f in run.findings:
-        if f.resource_type != "group":
-            continue
-        ev = f.evidence
-        row = merged.setdefault(f.resource_id, {
-            "group": f.resource_name or "", "group_id": f.resource_id, "kind": ev.get("kind_label", ""),
-            "issues": [], "worst_severity": "info", "owners": ev.get("owners"),
-            "user_members": ev.get("user_members"), "other_members": ev.get("other_members"),
-            "created": ev.get("created"), "age_days": ev.get("age_days"),
-            "synced_from_ad": ev.get("synced_from_ad"), "dynamic_rule": ev.get("dynamic_rule") or "",
-            "in_use_by": "; ".join(ev.get("usage") or []), "remediation": f.remediation,
-        })
-        row["issues"].append(f.check_id.removeprefix("GROUP_").lower())
-        if SEVERITY_ORDER.index(f.severity) > SEVERITY_ORDER.index(row["worst_severity"]):
-            row["worst_severity"] = f.severity
-    rows = sorted(merged.values(),
-                  key=lambda r: (-SEVERITY_ORDER.index(r["worst_severity"]), r["group"].lower()))
-    for row in rows:
-        row["issues"] = ", ".join(row["issues"])
-    return rows
-
-
-def render_groups_csv(run: AuditRun) -> str:
-    return _to_csv(GROUP_COLUMNS, groups_rows(run))
-
-
-def write_groups_csv(run: AuditRun, path: Path) -> Path:
-    _write_private(Path(path), render_groups_csv(run))
-    return Path(path)
-
-
 def render_policies_csv(run: AuditRun) -> str:
     return _to_csv(POLICY_COLUMNS, policies_rows(run))
 
@@ -222,20 +181,6 @@ def write_policies_csv(run: AuditRun, path: Path) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# Conditional Access report (HTML + Mermaid)
-# --------------------------------------------------------------------------- #
-
-def write_ca_html(run: AuditRun, path: Path, include_disabled: bool = True) -> Path:
-    _write_private(Path(path), render_html(run, include_disabled))
-    return Path(path)
-
-
-def write_ca_mermaid(run: AuditRun, path: Path, include_disabled: bool = False) -> Path:
-    _write_private(Path(path), render_mermaid_markdown(run, include_disabled))
-    return Path(path)
-
-
-# --------------------------------------------------------------------------- #
 # All formats at once
 # --------------------------------------------------------------------------- #
 
@@ -245,8 +190,6 @@ def write_reports(
     """Write the requested formats into ``directory``; returns the paths written.
 
     ``csv`` produces a findings file, plus a policies file when the run has CA policies.
-    ``html`` and ``mermaid`` are Conditional Access reports and are skipped if the run
-    has no CA policies.
     """
     formats = [f.strip().lower() for f in formats]
     bad = [f for f in formats if f not in SUPPORTED_FORMATS]
@@ -261,12 +204,6 @@ def write_reports(
         written.append(write_findings_csv(run, directory / f"{stem}-findings.csv"))
         if run.policies:
             written.append(write_policies_csv(run, directory / f"{stem}-policies.csv"))
-        if any(f.resource_type == "group" for f in run.findings):
-            written.append(write_groups_csv(run, directory / f"{stem}-groups.csv"))
-    if run.policies and "html" in formats:
-        written.append(write_ca_html(run, directory / f"{stem}-ca-report.html"))
-    if run.policies and "mermaid" in formats:
-        written.append(write_ca_mermaid(run, directory / f"{stem}-ca-diagram.md"))
     return written
 
 

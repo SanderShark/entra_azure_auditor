@@ -19,7 +19,6 @@ from ..models import (
     Application,
     ConditionalAccessPolicy,
     Credential,
-    DirectoryGroup,
     GroupInfo,
     MfaRegistration,
     NamedLocation,
@@ -29,14 +28,7 @@ from ..models import (
     TenantSnapshot,
     User,
 )
-from .client import (
-    GraphAuthError,
-    GraphClient,
-    GraphError,
-    GraphNotFoundError,
-    GraphPermissionError,
-    GraphRetryExhaustedError,
-)
+from .client import GraphClient, GraphError, GraphNotFoundError, GraphPermissionError
 
 T = TypeVar("T")
 
@@ -264,33 +256,6 @@ def parse_service_principal(raw: dict[str, Any]) -> ServicePrincipal:
     )
 
 
-_GROUP_SELECT = [
-    "id", "displayName", "description", "mail", "mailEnabled", "securityEnabled", "groupTypes",
-    "createdDateTime", "renewedDateTime", "membershipRule", "onPremisesSyncEnabled",
-    "isAssignableToRole", "assignedLicenses", "resourceProvisioningOptions", "visibility",
-]
-
-
-def parse_group(raw: dict[str, Any]) -> DirectoryGroup:
-    return DirectoryGroup(
-        id=raw["id"],
-        display_name=raw.get("displayName"),
-        description=raw.get("description"),
-        mail=raw.get("mail"),
-        mail_enabled=bool(raw.get("mailEnabled")),
-        security_enabled=bool(raw.get("securityEnabled")),
-        group_types=raw.get("groupTypes") or [],
-        created_at=raw.get("createdDateTime"),
-        renewed_at=raw.get("renewedDateTime"),
-        membership_rule=raw.get("membershipRule"),
-        on_prem_synced=bool(raw.get("onPremisesSyncEnabled")),
-        is_role_assignable=bool(raw.get("isAssignableToRole")),
-        has_licenses=bool(raw.get("assignedLicenses")),
-        is_team="Team" in (raw.get("resourceProvisioningOptions") or []),
-        visibility=raw.get("visibility"),
-    )
-
-
 _SP_ACTIVITY_KEYS = (
     "lastSignInActivity",
     "delegatedClientSignInActivity",
@@ -330,7 +295,6 @@ class TenantCollector:
         self.sign_in_data_available = True
         self.eligible_roles_available = True
         self.sp_sign_in_data_available = False
-        self.group_usage_available = False
         self._groups_denied = False
 
     # -- helpers ------------------------------------------------------------ #
@@ -341,17 +305,12 @@ class TenantCollector:
         fn: Callable[[], T],
         default: T | None,
         *,
-        fatal: tuple[type[GraphError], ...] = (GraphAuthError, GraphRetryExhaustedError),
+        catch: tuple[type[GraphError], ...] = (GraphPermissionError, GraphNotFoundError),
     ) -> T | None:
-        """Run ``fn``. If this one data source fails (missing permission or licence, an
-        unsupported query, ...), record a warning and return ``default`` so the rest of the
-        audit still runs. Auth failures and exhausted retries mean Graph itself is unusable,
-        so those (``fatal``) still abort the run."""
+        """Run ``fn``; on a permission/licence problem, warn and return ``default``."""
         try:
             return fn()
-        except fatal:
-            raise
-        except GraphError as exc:
+        except catch as exc:
             self.warnings.append(f"{label}: skipped ({exc})")
             return default
 
@@ -376,22 +335,16 @@ class TenantCollector:
     # -- roles -------------------------------------------------------------- #
 
     def role_definitions(self) -> list[RoleDefinition] | None:
-        """Role definitions. Microsoft's ``isPrivileged`` flag is not on the v1.0 endpoint, so
-        try beta first and fall back to v1.0 without it (our own critical-role list in
-        ``checks/_common.py`` still identifies the important roles)."""
-        path = "/roleManagement/directory/roleDefinitions"
-
-        def fetch(url: str, select: list[str]) -> list[RoleDefinition]:
-            return [parse_role_definition(r) for r in self._graph.get_all(url, select=select)]
-
-        try:
-            return fetch(f"{self._beta}{path}", ["id", "displayName", "isBuiltIn", "isPrivileged"])
-        except (GraphAuthError, GraphRetryExhaustedError):
-            raise
-        except GraphError:
-            pass  # beta unavailable or property unsupported: use v1.0
         return self._safe(
-            "role definitions", lambda: fetch(path, ["id", "displayName", "isBuiltIn"]), None
+            "role definitions",
+            lambda: [
+                parse_role_definition(r)
+                for r in self._graph.get_all(
+                    "/roleManagement/directory/roleDefinitions",
+                    select=["id", "displayName", "isBuiltIn", "isPrivileged"],
+                )
+            ],
+            None,
         )
 
     def role_assignments(
@@ -656,140 +609,10 @@ class TenantCollector:
             return out
 
         # Beta can 400/403/404 depending on tenant; any GraphError degrades gracefully.
-        result = self._safe("service principal sign-in activity (beta)", fetch, None, fatal=())
+        result = self._safe("service principal sign-in activity (beta)", fetch, None,
+                            catch=(GraphError,))
         self.sp_sign_in_data_available = result is not None
         return result or {}
-
-    # -- groups ------------------------------------------------------------- #
-
-    MAX_GROUP_PROBES = 5000  # direct per-group lookups allowed per run (keeps big tenants bounded)
-
-    def groups(self) -> list[DirectoryGroup] | None:
-        """All groups with owner/user counts.
-
-        Bulk ``$expand`` is fast but capped at 20 items per group and documented as unreliable,
-        so it is only a first pass: every group it reports as having no owners or no users is
-        then confirmed with a direct query before anything is reported as unowned/empty.
-        Counts that can't be confirmed stay ``None`` (unknown) and are never flagged.
-        """
-        return self._safe("groups", self._collect_groups, None)
-
-    def _expand_pass(self, by_id: dict[str, DirectoryGroup], edge: str) -> bool:
-        """One bulk pass for a single relationship (Graph allows only one expand at a time)."""
-
-        def run() -> bool:
-            for raw in self._graph.get_paged(
-                "/groups", select=["id"], expand=f"{edge}($select=id)", top=999
-            ):
-                group = by_id.get(raw.get("id"))
-                if group is None:
-                    continue
-                items = raw.get(edge) or []
-                if edge == "owners":
-                    group.owner_count = len(items)
-                else:
-                    users = sum(1 for i in items if str(i.get("@odata.type", "")).endswith(".user"))
-                    group.user_member_count = users
-                    group.other_member_count = len(items) - users
-            return True
-
-        return bool(self._safe(f"group {edge} (bulk query)", run, False))
-
-    def _probe_owners(self, group: DirectoryGroup) -> int:
-        found = self._graph.get_paged(f"/groups/{group.id}/owners", select=["id"], top=1, max_pages=1)
-        return 1 if any(True for _ in found) else 0
-
-    def _probe_users(self, group: DirectoryGroup) -> int:
-        """Does the group contain any user, directly or through nested groups?"""
-        found = self._graph.get_paged(
-            f"/groups/{group.id}/transitiveMembers/microsoft.graph.user",
-            select=["id"], top=1, count=True, max_pages=1,
-        )
-        return 1 if any(True for _ in found) else 0
-
-    def _collect_groups(self) -> list[DirectoryGroup]:
-        groups = [parse_group(r) for r in self._graph.get_all("/groups", select=_GROUP_SELECT, top=999)]
-        by_id = {g.id: g for g in groups}
-        owners_bulk = self._expand_pass(by_id, "owners")
-        members_bulk = self._expand_pass(by_id, "members")
-
-        # Candidates: everything unknown (bulk pass failed) plus everything bulk said was zero.
-        probes = 0
-        skipped = 0
-        for group in groups:
-            need_owners = group.owner_count == 0 if owners_bulk else True
-            need_users = group.user_member_count == 0 if members_bulk else True
-            if not (need_owners or need_users):
-                continue
-            if probes >= self.MAX_GROUP_PROBES:
-                skipped += 1
-                if need_owners:
-                    group.owner_count = None
-                if need_users:
-                    group.user_member_count = None
-                continue
-            if probes % 250 == 0:
-                self._progress(f"Confirming group ownership and membership ({probes} checked)")
-            try:
-                if need_owners:
-                    group.owner_count = self._probe_owners(group)
-                if need_users:
-                    group.user_member_count = self._probe_users(group)
-            except (GraphAuthError, GraphRetryExhaustedError):
-                raise
-            except GraphError as exc:  # can't confirm: unknown, never flagged
-                if need_owners:
-                    group.owner_count = None
-                if need_users:
-                    group.user_member_count = None
-                self.warnings.append(f"group {group.display_name or group.id}: could not confirm ({exc})")
-            probes += 1
-        if skipped:
-            self.warnings.append(
-                f"groups: {skipped} candidate group(s) not confirmed (limit of "
-                f"{self.MAX_GROUP_PROBES} direct lookups); their counts are reported as unknown"
-            )
-        return groups
-
-    def group_usage(self, groups: list[DirectoryGroup], limit: int = 3000) -> None:
-        """Where is each candidate group used? App assignments and nesting (incl. directory
-        roles). Licences, Teams and role-assignability come with the group itself; CA policy
-        references come from the policies. Not checked (not exposed by Graph): Azure RBAC,
-        Intune assignments, SharePoint/Exchange permissions, on-premises use."""
-        candidates = [g for g in groups if g.owner_count == 0 or g.user_member_count == 0][:limit]
-        looked_up = 0
-        for index, group in enumerate(candidates):
-            if index % 250 == 0 and index:
-                self._progress(f"Checking where groups are used ({index}/{len(candidates)})")
-            try:
-                apps = list(self._graph.get_paged(
-                    f"/groups/{group.id}/appRoleAssignments", select=["id"], top=100, max_pages=1))
-                parents = list(self._graph.get_paged(
-                    f"/groups/{group.id}/memberOf", select=["id", "displayName"], top=100, max_pages=1))
-            except (GraphAuthError, GraphRetryExhaustedError):
-                raise
-            except GraphNotFoundError:
-                continue  # deleted while we were scanning
-            except GraphPermissionError as exc:
-                self.warnings.append(
-                    f"group usage: skipped, needs Directory.Read.All ({exc}); "
-                    "stale-group classification disabled"
-                )
-                self.group_usage_available = False
-                return
-            except GraphError as exc:
-                self.warnings.append(f"group usage for {group.display_name or group.id}: skipped ({exc})")
-                continue
-            group.app_role_assignments = len(apps)
-            group.nested_in_groups = sum(
-                1 for p in parents if str(p.get("@odata.type", "")).endswith(".group"))
-            group.directory_roles = [
-                p.get("displayName") or "role" for p in parents
-                if str(p.get("@odata.type", "")).endswith(".directoryRole")
-            ]
-            group.usage_checked = True
-            looked_up += 1
-        self.group_usage_available = looked_up > 0 or not candidates
 
     # -- everything --------------------------------------------------------- #
 
@@ -801,8 +624,7 @@ class TenantCollector:
         ``apps`` (applications + service principals). Users are always collected.
         Sections that were not requested stay ``None`` in the snapshot.
         """
-        want = (sections if sections is not None
-                else {"roles", "role_defs", "mfa", "ca", "apps", "groups"})
+        want = sections if sections is not None else {"roles", "role_defs", "mfa", "ca", "apps"}
         p = self._progress
 
         p("Users")
@@ -838,13 +660,6 @@ class TenantCollector:
             p("Service principals")
             sps = self.service_principals()
 
-        groups = None
-        if "groups" in want:
-            p("Groups")
-            groups = self.groups()
-            if groups:
-                self.group_usage(groups)
-
         return TenantSnapshot(
             tenant_id=tenant_id,
             collected_at=datetime.now(timezone.utc),
@@ -860,8 +675,6 @@ class TenantCollector:
             security_defaults_enabled=defaults,
             applications=apps,
             service_principals=sps,
-            groups=groups,
-            group_usage_available=self.group_usage_available,
             sp_sign_in_data_available=self.sp_sign_in_data_available,
             warnings=self.warnings,
         )

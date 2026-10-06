@@ -17,7 +17,6 @@ Every command that touches Graph honours ``--mode app|device|browser`` (default:
 import logging
 import os
 import sys
-import webbrowser
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -54,14 +53,11 @@ from .graph.client import GraphClient
 from .models import Finding
 from .reports import (
     SUPPORTED_FORMATS,
-    base_name,
     default_runs_dir,
     list_runs,
     load_run,
     resolve_run,
     save_run,
-    write_ca_html,
-    write_ca_mermaid,
     write_reports,
 )
 
@@ -492,44 +488,6 @@ def policies(
         print_policies(items)
 
 
-def _write_ca_report(
-    run_: AuditRun, out: Optional[Path], mermaid: bool, hide_disabled: bool
-) -> list[Path]:
-    """Write the HTML report (and optionally the Mermaid .md). ``out`` may be a file or directory."""
-    if not run_.policies:
-        _fail("This run has no Conditional Access policies (none exist, or the mfa_ca check was "
-              "not run). Run `auditor run --checks mfa_ca` first.")
-    if out is not None and out.suffix.lower() in (".html", ".htm"):
-        html_path = out
-    else:
-        html_path = (out or Path("reports")) / f"{base_name(run_)}-ca-report.html"
-    written = [write_ca_html(run_, html_path, include_disabled=not hide_disabled)]
-    if mermaid:
-        written.append(write_ca_mermaid(run_, html_path.with_name(
-            html_path.stem.removesuffix("-ca-report") + "-ca-diagram.md")))
-    return written
-
-
-@app.command("ca-report")
-def ca_report(
-    run_ref: RunArg = None,
-    out: Annotated[Optional[Path], typer.Option(
-        "--out", "-o", help="Output .html file or directory (default: ./reports).")] = None,
-    mermaid: Annotated[bool, typer.Option(
-        "--mermaid", help="Also write the diagram as a Markdown file (renders on GitHub).")] = False,
-    hide_disabled: Annotated[bool, typer.Option(
-        "--hide-disabled", help="Leave disabled policies out of the report.")] = False,
-    open_browser: Annotated[bool, typer.Option(
-        "--open", help="Open the report in your browser.")] = False,
-) -> None:
-    """Generate a self-contained HTML report of your Conditional Access policies."""
-    paths = _write_ca_report(_load(run_ref), out, mermaid, hide_disabled)
-    for path in paths:
-        console.print(f"[green]Wrote[/] {escape(str(path))}")
-    if open_browser:
-        webbrowser.open(paths[0].resolve().as_uri())
-
-
 @app.command()
 def compare(
     old: Annotated[str, typer.Argument(help="Older run.")] = "previous",
@@ -682,32 +640,22 @@ def _pick_run(q, prompt: str = "Choose a run") -> Optional[Path]:
     return q.select(prompt, choices=choices).ask()
 
 
-# questionary treats `Choice(value=None)` as "use the title text as the value", so menu
-# choices that mean "none"/"back" need explicit sentinel strings instead of None.
-_BACK = "__back__"
-_ALL = "__all__"
-
-
 def _browse_findings(q, run_: AuditRun) -> None:
-    level = q.select("Show which severities?", choices=[
-        q.Choice("Everything", value=_ALL), q.Choice("High and above", value="high"),
+    label = q.select("Show which severities?", choices=[
+        q.Choice("Everything", value=None), q.Choice("High and above", value="high"),
         q.Choice("Medium and above", value="medium"), q.Choice("Critical only", value="critical"),
-        q.Choice("<- Back", value=_BACK),
     ]).ask()
-    if level in (None, _BACK):  # None = Ctrl-C
-        return
-    floor = None if level == _ALL else level
     while True:
-        items = filter_findings(run_, floor)[:500]
+        items = filter_findings(run_, label)[:500]
         if not items:
             console.print("[green]No findings at that level.[/]")
             return
         picked = q.select(
             f"{len(items)} finding(s). Select one for details:",
             choices=[q.Choice(f"[{f.severity:<8}] {f.title[:100]}", value=i) for i, f in enumerate(items)]
-                    + [q.Choice("<- Back", value=_BACK)],
+                    + [q.Choice("<- Back", value=None)],
         ).ask()
-        if picked in (None, _BACK):
+        if picked is None:
             return
         print_finding_detail(items[picked])
         console.input("[dim]Press Enter to continue[/]")
@@ -722,8 +670,8 @@ def _browse_policies(q, run_: AuditRun) -> None:
         picked = q.select("Explain which policy?", choices=[
             q.Choice(f"{p.name}  ({STATE_LABEL.get(p.state, (p.state,))[0]}, {ACTION_LABEL[p.action][0]})",
                      value=i) for i, p in enumerate(run_.policies)
-        ] + [q.Choice("<- Back", value=_BACK)]).ask()
-        if picked in (None, _BACK):
+        ] + [q.Choice("<- Back", value=None)]).ask()
+        if picked is None:
             return
         print_policy_detail(run_.policies[picked])
         console.input("[dim]Press Enter to continue[/]")
@@ -756,7 +704,6 @@ def menu(mode: ModeOpt = None) -> None:
             q.Choice("Run a new audit", value="run"),
             q.Choice("Browse findings", value="findings"),
             q.Choice("Conditional Access policies (plain English)", value="policies"),
-            q.Choice("Conditional Access report (HTML + diagram)", value="ca_report"),
             q.Choice("Export report (JSON / CSV)", value="export"),
             q.Choice("Compare two runs", value="compare"),
             q.Choice("Switch to a saved run", value="switch"),
@@ -774,20 +721,12 @@ def menu(mode: ModeOpt = None) -> None:
                     current = _execute_run(mode, ",".join(picked), AuditConfig(), save=True)
             elif choice == "permissions":
                 _permissions_table(mode, "all")
-            elif choice in ("findings", "policies", "ca_report", "export") and current is None:
+            elif choice in ("findings", "policies", "export") and current is None:
                 console.print("[yellow]No run loaded yet. Run an audit or switch to a saved run.[/]")
             elif choice == "findings":
                 _browse_findings(q, current)
             elif choice == "policies":
                 _browse_policies(q, current)
-            elif choice == "ca_report":
-                directory = q.text("Output directory:", default="reports").ask()
-                if directory:
-                    paths = _write_ca_report(current, Path(directory), True, False)
-                    for path in paths:
-                        console.print(f"[green]Wrote[/] {escape(str(path))}")
-                    if q.confirm("Open the report in your browser?", default=True).ask():
-                        webbrowser.open(paths[0].resolve().as_uri())
             elif choice == "export":
                 chosen = q.checkbox("Formats", choices=[
                     q.Choice(f, checked=True) for f in SUPPORTED_FORMATS]).ask()
