@@ -23,7 +23,6 @@ from typing import Annotated, Optional
 
 import typer
 from rich import box
-from rich.console import Console
 from rich.json import JSON
 from rich.markup import escape
 from rich.panel import Panel
@@ -34,10 +33,19 @@ from . import __version__
 from .auth import (
     AuthenticationError,
     AuthMode,
-    AuthSettings,
     UserTokenProvider,
     create_token_provider,
     token_permissions,
+)
+from .cli_common import (
+    SEV_STYLE,
+    ModeOpt,
+    build_settings as _settings,
+    console,
+    err,
+    fail as _fail,
+    sev as _sev,
+    t as _t,
 )
 from .checks import CHECKS
 from .checks._common import SEVERITY_ORDER, AuditConfig
@@ -72,16 +80,6 @@ app = typer.Typer(
     add_completion=False,
     pretty_exceptions_show_locals=False,  # tracebacks must never print tokens/secrets
 )
-console = Console()
-err = Console(stderr=True)
-
-SEV_STYLE = {
-    "critical": "bold white on red",
-    "high": "bold red",
-    "medium": "yellow",
-    "low": "cyan",
-    "info": "dim",
-}
 STATE_LABEL = {
     "enabled": ("ON", "green"),
     "enabledForReportingButNotEnforced": ("REPORT-ONLY", "yellow"),
@@ -93,14 +91,8 @@ ACTION_LABEL = {
     "session_only": ("SESSION", "magenta"),
     "no_effect": ("NONE", "dim"),
 }
-USER_MODE_ONLY_ENV = (
-    "AZURE_CLIENT_SECRET", "AZURE_CLIENT_CERT_PATH",
-    "AZURE_CLIENT_CERT_THUMBPRINT", "AZURE_CLIENT_CERT_PASSPHRASE",
-)
 
 # --- shared option types ------------------------------------------------------
-ModeOpt = Annotated[Optional[str], typer.Option(
-    "--mode", "-m", help="Auth mode: app | device | browser (default: $AUDITOR_AUTH_MODE or app).")]
 RunArg = Annotated[Optional[str], typer.Argument(
     help="Saved run: latest (default), previous, a run id prefix, or a .json file.")]
 
@@ -108,20 +100,6 @@ RunArg = Annotated[Optional[str], typer.Argument(
 # --------------------------------------------------------------------------- #
 # Small helpers
 # --------------------------------------------------------------------------- #
-
-def _fail(message: str, code: int = 1) -> "typer.Exit":
-    err.print(f"[bold red]Error:[/] {escape(message)}")
-    raise typer.Exit(code)
-
-
-def _t(value: object) -> Text:
-    """Render data as literal text (never as Rich markup: names may contain [brackets])."""
-    return Text(str(value))
-
-
-def _sev(severity: str) -> Text:
-    return Text(severity.upper(), style=SEV_STYLE[severity])
-
 
 def _validate_severity(value: Optional[str]) -> Optional[str]:
     if value is None:
@@ -132,23 +110,6 @@ def _validate_severity(value: Optional[str]) -> Optional[str]:
     return value
 
 
-def _settings(mode: Optional[str]) -> AuthSettings:
-    env = dict(os.environ)
-    if mode:
-        try:
-            chosen = AuthMode(mode.lower())
-        except ValueError:
-            _fail("Mode must be one of: app, device, browser")
-        env["AUDITOR_AUTH_MODE"] = chosen.value
-        if chosen.is_user:  # the app secret/cert must not leak into a user sign-in
-            for key in USER_MODE_ONLY_ENV:
-                env.pop(key, None)
-    try:
-        return AuthSettings.from_env(env)
-    except AuthenticationError as exc:
-        _fail(str(exc))
-
-
 def _load(ref: Optional[str]) -> AuditRun:
     try:
         return load_run(resolve_run(ref))
@@ -156,9 +117,11 @@ def _load(ref: Optional[str]) -> AuditRun:
         _fail(str(exc))
 
 
-def _audit_config(inactive_days: int, guest_days: int, admin_days: int) -> AuditConfig:
+def _audit_config(inactive_days: int, guest_days: int, admin_days: int,
+                  include_mail_enabled_groups: bool = False, group_stale_days: int = 180) -> AuditConfig:
     return AuditConfig(
-        inactive_days=inactive_days, guest_inactive_days=guest_days, admin_inactive_days=admin_days
+        inactive_days=inactive_days, guest_inactive_days=guest_days, admin_inactive_days=admin_days,
+        include_mail_enabled_groups=include_mail_enabled_groups, group_stale_days=group_stale_days,
     )
 
 
@@ -426,6 +389,12 @@ def run(
     inactive_days: Annotated[int, typer.Option(help="Inactivity threshold for member accounts.")] = 90,
     guest_days: Annotated[int, typer.Option(help="Inactivity threshold for guests.")] = 60,
     admin_days: Annotated[int, typer.Option(help="Inactivity threshold for privileged accounts.")] = 45,
+    group_stale_days: Annotated[int, typer.Option(
+        help="Empty, unused groups older than this are reported as stale.")] = 180,
+    include_mail_enabled_groups: Annotated[bool, typer.Option(
+        "--include-mail-enabled-groups",
+        help="Also audit mail-enabled security groups and distribution lists (skipped by default: "
+             "they are managed in Exchange and show no Entra owners).")] = False,
     out: Annotated[Optional[Path], typer.Option(
         "--out", "-o", help="Also write reports into this directory.")] = None,
     formats: Annotated[str, typer.Option(help=f"Report formats: {', '.join(SUPPORTED_FORMATS)}.")] = "json,csv",
@@ -435,7 +404,10 @@ def run(
 ) -> None:
     """Run an audit against your tenant."""
     floor = _validate_severity(fail_on)
-    result = _execute_run(mode, checks, _audit_config(inactive_days, guest_days, admin_days), save)
+    result = _execute_run(
+        mode, checks,
+        _audit_config(inactive_days, guest_days, admin_days, include_mail_enabled_groups, group_stale_days),
+        save)
 
     if result.status is RunStatus.FAILED:
         raise typer.Exit(1)
@@ -682,22 +654,32 @@ def _pick_run(q, prompt: str = "Choose a run") -> Optional[Path]:
     return q.select(prompt, choices=choices).ask()
 
 
+# questionary treats `Choice(value=None)` as "use the title text as the value", so menu
+# choices that mean "none"/"back" need explicit sentinel strings instead of None.
+_BACK = "__back__"
+_ALL = "__all__"
+
+
 def _browse_findings(q, run_: AuditRun) -> None:
-    label = q.select("Show which severities?", choices=[
-        q.Choice("Everything", value=None), q.Choice("High and above", value="high"),
+    level = q.select("Show which severities?", choices=[
+        q.Choice("Everything", value=_ALL), q.Choice("High and above", value="high"),
         q.Choice("Medium and above", value="medium"), q.Choice("Critical only", value="critical"),
+        q.Choice("<- Back", value=_BACK),
     ]).ask()
+    if level in (None, _BACK):  # None = Ctrl-C
+        return
+    floor = None if level == _ALL else level
     while True:
-        items = filter_findings(run_, label)[:500]
+        items = filter_findings(run_, floor)[:500]
         if not items:
             console.print("[green]No findings at that level.[/]")
             return
         picked = q.select(
             f"{len(items)} finding(s). Select one for details:",
             choices=[q.Choice(f"[{f.severity:<8}] {f.title[:100]}", value=i) for i, f in enumerate(items)]
-                    + [q.Choice("<- Back", value=None)],
+                    + [q.Choice("<- Back", value=_BACK)],
         ).ask()
-        if picked is None:
+        if picked in (None, _BACK):
             return
         print_finding_detail(items[picked])
         console.input("[dim]Press Enter to continue[/]")
@@ -712,8 +694,8 @@ def _browse_policies(q, run_: AuditRun) -> None:
         picked = q.select("Explain which policy?", choices=[
             q.Choice(f"{p.name}  ({STATE_LABEL.get(p.state, (p.state,))[0]}, {ACTION_LABEL[p.action][0]})",
                      value=i) for i, p in enumerate(run_.policies)
-        ] + [q.Choice("<- Back", value=None)]).ask()
-        if picked is None:
+        ] + [q.Choice("<- Back", value=_BACK)]).ask()
+        if picked in (None, _BACK):
             return
         print_policy_detail(run_.policies[picked])
         console.input("[dim]Press Enter to continue[/]")
@@ -750,6 +732,8 @@ def menu(mode: ModeOpt = None) -> None:
             q.Choice("Export report (JSON / CSV)", value="export"),
             q.Choice("Compare two runs", value="compare"),
             q.Choice("Switch to a saved run", value="switch"),
+            q.Choice("Unowned / empty / stale groups (from the current run)", value="groups"),
+            q.Choice("Identity toolkit: search, edit, groups, PIM", value="toolkit"),
             q.Choice("Check API permissions", value="permissions"),
             q.Choice("Quit", value="quit"),
         ]).ask()
@@ -761,9 +745,20 @@ def menu(mode: ModeOpt = None) -> None:
                 picked = q.checkbox("Checks to run", choices=[
                     q.Choice(name, value=name, checked=True) for name in CHECKS]).ask()
                 if picked:
-                    current = _execute_run(mode, ",".join(picked), AuditConfig(), save=True)
+                    result = _execute_run(mode, ",".join(picked), AuditConfig(), save=True)
+                    if result.status is not RunStatus.FAILED:  # keep the last good run on failure
+                        current = result
             elif choice == "permissions":
                 _permissions_table(mode, "all")
+            elif choice == "toolkit":
+                from .toolkit.cli import run_toolkit_menu
+                run_toolkit_menu(mode)
+            elif choice == "groups":
+                from .toolkit.cli import print_stale_groups
+                if current is None:
+                    console.print("[yellow]No run loaded yet. Run an audit (include the groups check) first.[/]")
+                else:
+                    print_stale_groups(current)
             elif choice in ("findings", "policies", "ca_report", "export") and current is None:
                 console.print("[yellow]No run loaded yet. Run an audit or switch to a saved run.[/]")
             elif choice == "findings":
@@ -802,6 +797,12 @@ def menu(mode: ModeOpt = None) -> None:
             continue  # a failed action reports its own error; stay in the menu
         except (ValueError, OSError) as exc:
             err.print(f"[red]{escape(str(exc))}[/]")
+
+
+# The identity toolkit (auditor id | group | pim | toolkit). Imported last: it uses cli_common, not cli.
+from .toolkit.cli import register as _register_toolkit  # noqa: E402
+
+_register_toolkit(app)
 
 
 def main() -> None:

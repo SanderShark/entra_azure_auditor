@@ -4,6 +4,7 @@ from .client import (
     GraphError,
     GraphNotFoundError,
     GraphPermissionError,
+    GraphResponse,
     GraphRetryExhaustedError,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "GraphError",
     "GraphNotFoundError",
     "GraphPermissionError",
+    "GraphResponse",
     "GraphRetryExhaustedError",
 ]

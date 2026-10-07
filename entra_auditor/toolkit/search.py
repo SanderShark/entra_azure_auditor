@@ -154,7 +154,10 @@ def find_users(graph: GraphClient, query: str, by: str = "auto", limit: int = 25
         elif looks_like_email(q):
             plan = [upn_or_mail, proxy, other_mail, prefix]
         else:
-            plan = [alias_or_employee, name_search]
+            # Plain text ("bob", "E100", "ng"): an exact alias/employee-id hit must NOT hide other
+            # people with a similar name, so combine both and let the caller choose. (This tool
+            # edits people; silently picking the first hit would be dangerous.)
+            return _dedupe(_soft(alias_or_employee) + _soft(name_search))
     else:
         plan = {
             "id": [by_id], "upn": [upn_only], "mail": [mail_only, proxy, other_mail],
@@ -233,6 +236,22 @@ def resolve_group(graph: GraphClient, ident: str) -> GroupSummary:
     if len(exact) == 1:
         return exact[0]
     raise AmbiguousIdentity(ident, matches)
+
+
+def get_user(graph: GraphClient, user_id: str) -> UserSummary:
+    """One user by object id (direct lookup, no searching)."""
+    try:
+        return _user(graph.get(f"/users/{segment(user_id)}", select=USER_SELECT), "id")
+    except GraphNotFoundError as exc:
+        raise IdentityNotFound(f"No user with id '{user_id}'.") from exc
+
+
+def get_group(graph: GraphClient, group_id: str) -> GroupSummary:
+    """One group by object id (direct lookup, no searching)."""
+    try:
+        return _group(graph.get(f"/groups/{segment(group_id)}", select=GROUP_SELECT))
+    except GraphNotFoundError as exc:
+        raise IdentityNotFound(f"No group with id '{group_id}'.") from exc
 
 
 def find_apps(graph: GraphClient, query: str, limit: int = 25) -> list[AppSummary]:

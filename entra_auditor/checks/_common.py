@@ -33,6 +33,8 @@ class AuditConfig:
     mfa_gap_high_pct: float = 25.0
     max_roles_per_admin: int = 3           # more privileged roles than this = least-privilege smell
     pending_invite_days: int = 30          # guest invitation unaccepted this long = stale
+    group_stale_days: int = 180            # empty + unused groups older than this are "stale"
+    include_mail_enabled_groups: bool = False  # mail-enabled security groups / DLs are skipped
     max_evidence_items: int = 100          # cap lists stored in evidence
 
 
