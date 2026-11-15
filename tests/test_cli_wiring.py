@@ -147,3 +147,21 @@ def test_show_log_and_stale_commands(tk):
     assert invoke("id", "log")[0] == 0
     code, out, _ = invoke("group", "stale")
     assert code == 1 and "No saved runs" in out
+
+
+def test_gui_without_qt_says_how_to_install_it(monkeypatch):
+    import entra_auditor.gui as gui
+
+    monkeypatch.setattr(gui, "qt_available", lambda: False)
+    code, out, _ = invoke("gui")
+    assert code == 1 and "PySide6" in out and ".[gui]" in out
+
+
+def test_gui_starts_the_desktop_app(monkeypatch):
+    pytest.importorskip("PySide6")
+    import entra_auditor.gui.app as gui_app
+
+    started = []
+    monkeypatch.setattr(gui_app, "run", lambda *a, **k: started.append(True) or 0)
+    code, _out, _ = invoke("gui")
+    assert code == 0 and started == [True]

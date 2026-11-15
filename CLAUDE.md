@@ -33,12 +33,18 @@ entra_auditor/
   reports.py           JSON/CSV writers, local run store (~/.entra_auditor/runs)
   ca_report.py         offline HTML report + Mermaid diagram for CA policies
   cli.py, cli_common.py   Typer/Rich audit CLI and interactive menu
+  tenants.py           tenants.json (desktop app) + one token cache per tenant
   toolkit/             identity toolkit: search, profile, actions (plan/execute), pim, certids,
                        passwords, odata (escaping), audit_log, cli (commands + menu),
                        flow (the change flow as a UI-independent state machine),
-                       ui (Rich rendering + `run_action`, the terminal driver for flow)
+                       ui (Rich rendering + `run_action`, the terminal driver for flow),
+                       directory (load all users once for local filtering)
+  gui/                 PySide6 desktop app (`auditor gui`, optional extra `.[gui]`): tasks (thread pool ->
+                       UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
+                       main_window, app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~630 tests, no network; fakes.py, builders.py, conftest.py
+tests/                 ~690 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+                       test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
 ## Rules that must not be broken
@@ -83,12 +89,19 @@ tests/                 ~630 tests, no network; fakes.py, builders.py, conftest.p
 - pytest's `capsys` re-installs its stream as `sys.stdout` each test phase; `fake_tty` patches
   `CaptureIO.isatty` rather than wrapping `sys.stdout`.
 - `requires-python` is 3.10: no 3.12-only syntax (e.g. reusing the outer quote inside an f-string).
+- Qt: a signal connected to a plain Python callable runs it in the EMITTING thread. Worker results go through
+  `gui/tasks.py TaskRunner` (a relay to a QObject on the UI thread); never update widgets from a worker.
+- Qt makes a dialog's first accept button the default on show: the change preview forced Cancel back as the
+  default (Enter must never apply a change). Keep that test.
 
 ## What has and hasn't been verified against a live tenant
 
 Verified live: app-mode audit run, `id search`, `pim list`, password reset (Entra returns the generated password).
 
-**Not yet verified live:** PIM activation (the test tenant had no eligible roles), group add/remove after the
+**Not yet verified live:** PIM activation (the test tenant had no eligible roles) **including the desktop
+app's elevation dialogs** (`gui/change.py`: role choice, justification, wait, retry; built and tested against
+`FakeTenant` only, the owner will test in a production tenant), the desktop app's sign-in (device code and
+browser through `gui/session.py`) and its directory load at scale, group add/remove after the
 0.2.3 fix, certificate-ID writes, the group audit's `$expand` behaviour at scale, and the `$expand` on the PIM
 `filterByCurrentUser` listings. Treat these as the first things to test in a real tenant.
 
@@ -103,7 +116,11 @@ pydantic 2.14, Typer 0.29, Rich 14.3, questionary 2.1, httpx 0.28, MSAL 1.39). P
    and is resumed with `confirm(bool)`, `choose_role(role|None)`, `justify(text|None)`. Messages and
    spinners go through a `Reporter` (`notice(Notice)`, `busy(text)`). The flow blocks while it executes and
    waits, so the GUI calls it from a worker. `ui.run_action` is the terminal driver; tests in `tests/test_flow.py`.
-3. **Qt desktop app** (`entra_auditor/gui/`, PySide6, `auditor gui` command):
+3. **Qt desktop app** (`entra_auditor/gui/`, PySide6, `auditor gui` command). Milestone 1 done on branch `gui`:
+   sign-in dialog (tenants.json, device code with copy/open/cancel, browser with a 5-minute timeout), Users list
+   (background load, type-to-filter), General tab, enable/disable through the flow dialogs. Next: the other
+   property tabs (reuse the profile `user_detail` already loads), Groups, Roles/PIM, Audit, Action log,
+   tenant switcher. Remaining design notes:
    - ADUC-style: navigation (Users, Groups, Roles/PIM, Audit, Action log) | list | property tabs
      (General, Groups, Sign-in methods, Certificate IDs, Roles, Activity).
    - Speed: load the directory once in the background (`$select`, `$top=999`, all pages), filter locally as

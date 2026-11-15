@@ -799,6 +799,18 @@ def menu(mode: ModeOpt = None) -> None:
             err.print(f"[red]{escape(str(exc))}[/]")
 
 
+@app.command()
+def gui() -> None:
+    """Open the desktop app (needs the optional Qt dependency: pip install ".[gui]")."""
+    from .gui import MISSING_MESSAGE, qt_available
+
+    if not qt_available():
+        _fail(MISSING_MESSAGE)
+    from .gui.app import run
+
+    raise typer.Exit(run())
+
+
 # The identity toolkit (auditor id | group | pim | toolkit). Imported last: it uses cli_common, not cli.
 from .toolkit.cli import register as _register_toolkit  # noqa: E402
 

@@ -1,0 +1,73 @@
+"""Loading the whole user directory once (toolkit/directory.py)."""
+
+import pytest
+
+from entra_auditor.graph.client import GraphError
+from entra_auditor.toolkit.directory import PAGE_SIZE, LoadCancelled, load_users
+from entra_auditor.toolkit.search import USER_SELECT
+from tests.fakes import FakeGraph, FakeTenant
+
+
+def many(n):
+    return [{"id": f"u{i}", "displayName": f"User {i:05d}", "userPrincipalName": f"u{i}@contoso.com"} for i in range(n)]
+
+
+def test_it_asks_for_few_properties_and_the_largest_page():
+    graph = FakeGraph({"/users": many(3)})
+    load_users(graph)
+    [(path, kw)] = graph.calls
+    assert path == "/users" and kw["select"] == USER_SELECT and kw["top"] == PAGE_SIZE == 999
+
+
+def test_every_user_is_returned_sorted_by_name():
+    users = load_users(FakeTenant())
+    names = [u.display_name for u in users]
+    assert len(users) == 8 and names == sorted(names, key=str.casefold)
+    alice = next(u for u in users if u.upn == "alice@contoso.com")
+    assert alice.department == "IT" and alice.account_enabled is True
+
+
+def test_progress_is_reported_once_per_page_and_at_the_end():
+    seen = []
+    load_users(FakeGraph({"/users": many(2 * PAGE_SIZE + 5)}), on_progress=seen.append)
+    assert seen == [PAGE_SIZE, 2 * PAGE_SIZE, 2 * PAGE_SIZE + 5]
+
+
+def test_an_exact_multiple_of_the_page_size_still_reports_the_final_count():
+    seen = []
+    load_users(FakeGraph({"/users": many(PAGE_SIZE)}), on_progress=seen.append)
+    assert seen[-1] == PAGE_SIZE
+
+
+def test_an_empty_tenant_is_an_empty_list():
+    assert load_users(FakeGraph({"/users": []})) == []
+
+
+def test_a_failed_load_raises_instead_of_returning_a_partial_list():
+    def broken(kw):
+        def pages():
+            yield from many(3)
+            raise GraphError("throttled for too long", status_code=429)
+        return pages()
+
+    with pytest.raises(GraphError):
+        load_users(FakeGraph({"/users": broken}))
+
+
+def test_a_load_can_be_cancelled_between_pages():
+    calls = {"n": 0}
+
+    def cancel():
+        calls["n"] += 1
+        return True
+
+    with pytest.raises(LoadCancelled):
+        load_users(FakeGraph({"/users": many(PAGE_SIZE + 1)}), should_cancel=cancel)
+    assert calls["n"] == 1                      # stopped at the first page boundary
+
+
+def test_fifty_thousand_users_load_quickly():
+    import time
+    start = time.perf_counter()
+    users = load_users(FakeGraph({"/users": many(50_000)}))
+    assert len(users) == 50_000 and time.perf_counter() - start < 5

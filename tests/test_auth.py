@@ -15,6 +15,7 @@ from entra_auditor.auth import (
     AuthenticationError,
     AuthMode,
     AuthSettings,
+    DeviceCode,
     UserTokenProvider,
     missing_permissions,
     toolkit_scopes,
@@ -268,3 +269,44 @@ def test_granted_permissions_come_from_the_token(tmp_path):
     app = FakePublicApp(accounts=[ACCOUNT], silent={"access_token": jwt({"scp": "A B"})})
     provider, _ = user_provider(tmp_path, app)
     assert provider.granted_permissions() == {"A", "B"}
+
+
+# ---- hooks the desktop app uses -----------------------------------------------------------
+
+def test_a_device_code_callback_gets_the_code_and_link_instead_of_the_printed_message(tmp_path, capsys):
+    app = FakePublicApp(device={"access_token": "new"})
+    seen = []
+    provider, _ = user_provider(tmp_path, app, on_device_code=seen.append)
+    assert provider.get_token() == "new"
+    assert seen == [DeviceCode("ABC123", "https://microsoft.com/devicelogin",
+                               "Go to https://microsoft.com/devicelogin and enter ABC123")]
+    assert "ABC123" not in capsys.readouterr().err          # nothing printed when a callback is given
+
+
+def test_cancelling_a_waiting_device_code_sign_in_stops_it(tmp_path):
+    holder = {}
+
+    class Waiting(FakePublicApp):
+        def acquire_token_by_device_flow(self, flow):
+            holder["provider"].cancel_sign_in()             # what the dialog's Cancel button does
+            assert flow["expires_at"] == 0                  # MSAL's poll loop exits on its next check
+            return {"error": "authorization_pending", "error_description": "still waiting"}
+
+    provider, _ = user_provider(tmp_path, Waiting())
+    holder["provider"] = provider
+    with pytest.raises(AuthenticationError, match="cancelled"):
+        provider.get_token()
+    provider.cancel_sign_in()                               # nothing pending any more: a no-op
+
+
+def test_a_browser_sign_in_timeout_is_passed_to_msal_only_when_set(tmp_path):
+    class Timed(FakePublicApp):
+        def acquire_token_interactive(self, scopes, timeout=None):
+            self.calls.append(("browser", timeout))
+            self.accounts.append(ACCOUNT)
+            return self.interactive
+
+    app = Timed(interactive={"access_token": "b"})
+    provider, _ = user_provider(tmp_path, app, mode=AuthMode.BROWSER, interactive_timeout=300)
+    provider.get_token()
+    assert ("browser", 300) in app.calls

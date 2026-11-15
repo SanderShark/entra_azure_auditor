@@ -10,6 +10,8 @@ from types import SimpleNamespace
 # Rich wraps output at the terminal width. Make it wide so assertions on printed text don't
 # break across lines. This must run BEFORE the package (and its Rich consoles) is imported.
 os.environ["COLUMNS"] = "250"
+# GUI tests run headless everywhere (no display needed); CI sets the same.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 
@@ -40,6 +42,8 @@ def isolated_env(monkeypatch, tmp_path):
     monkeypatch.setenv("AUDITOR_ACTION_LOG", str(paths.log))
     monkeypatch.setenv("AUDITOR_RUNS_DIR", str(paths.runs))
     monkeypatch.setenv("AUDITOR_TOKEN_CACHE", str(paths.cache))
+    paths.config = tmp_path / "config"          # tenants.json and per-tenant token caches
+    monkeypatch.setenv("AUDITOR_CONFIG_DIR", str(paths.config))
     return paths
 
 
@@ -208,3 +212,14 @@ def no_stdin(monkeypatch):
     import builtins
 
     monkeypatch.setattr(builtins, "input", lambda *args, **kwargs: "")
+
+
+@pytest.fixture
+def runner(qtbot):
+    """The desktop app's background task runner (GUI tests only; they skip without PySide6)."""
+    from entra_auditor.gui.tasks import TaskRunner
+
+    task_runner = TaskRunner()
+    yield task_runner
+    task_runner.wait(10_000)
+    qtbot.wait(10)          # let the last queued callbacks run before widgets go away

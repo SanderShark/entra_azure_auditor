@@ -183,6 +183,33 @@ roles the signed-in person holds (that is why elevation matters). Set `AUDITOR_T
 capabilities you don't want (for example remove `UserAuthenticationMethod.ReadWrite.All` if you never reset
 passwords).
 
+## Desktop app (preview)
+
+A Qt window for the identity toolkit: users on the left, their properties on the right, and every change
+shown as a preview you confirm (with PIM elevation when Entra says you need a role).
+
+```bash
+python -m pip install ".[gui]"     # PySide6 is optional: the CLI doesn't need it
+python -m entra_auditor gui
+```
+
+It signs in as you (device code or browser), never with an app secret. Tenants come from
+`~/.entra_auditor/tenants.json`, or from `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` in `.env` when that file is missing:
+
+```json
+{"tenants": [
+  {"name": "Contoso", "tenant_id": "<tenant id>", "client_id": "<app id>"},
+  {"name": "Fabrikam", "tenant_id": "fabrikam.onmicrosoft.com", "client_id": "<app id>"}
+]}
+```
+
+Each tenant keeps its own token cache (`~/.entra_auditor/tenants/<tenant id>.token_cache.json`). The app
+registration needs **Allow public client flows** for device code, and the `http://localhost` redirect URI
+(Mobile and desktop platform) for browser sign-in.
+
+So far: sign-in, the user list (whole directory loaded once, filtered as you type), the General tab, and
+enable/disable. Groups, roles, audit and the action log come next.
+
 ## Security notes
 
 - **Never commit secrets.** `.env`, certificates, token caches and audit output are in `.gitignore`.

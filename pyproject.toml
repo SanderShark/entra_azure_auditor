@@ -10,6 +10,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 # Add a `license` entry (and a LICENSE file) once you have chosen one.
 
+[project.optional-dependencies]
+# The desktop app (`auditor gui`). Optional because Qt is large (~700 MB installed); the CLI doesn't need it.
+# PySide6 is LGPL: fine to depend on; check the obligations before distributing a bundled build.
+gui = ["PySide6>=6.7,<7"]
+
 [project.scripts]
 auditor = "entra_auditor.cli:main"
 

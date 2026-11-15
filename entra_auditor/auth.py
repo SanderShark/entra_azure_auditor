@@ -91,6 +91,14 @@ class AuthMode(str, Enum):
         return self is not AuthMode.APP
 
 
+@dataclass(frozen=True)
+class DeviceCode:
+    """What the user needs for a device-code sign-in: open `verification_uri`, enter `user_code`."""
+    user_code: str
+    verification_uri: str
+    message: str
+
+
 class TokenProvider(Protocol):
     """Anything that can hand the Graph client a bearer token.
 
@@ -292,6 +300,8 @@ class UserTokenProvider:
         cache: msal.SerializableTokenCache | None = None,
         allow_interactive: bool = True,
         prompt: Callable[[str], None] | None = None,
+        on_device_code: Callable[[DeviceCode], None] | None = None,
+        interactive_timeout: float | None = None,
     ) -> None:
         if not settings.mode.is_user:
             raise AuthenticationError("UserTokenProvider requires mode=device or browser")
@@ -302,6 +312,11 @@ class UserTokenProvider:
         self._allow_interactive = allow_interactive
         # Where device-code instructions go; stderr keeps stdout clean for JSON output.
         self._prompt = prompt or (lambda msg: print(msg, file=sys.stderr))
+        # A GUI wants the code and the link separately (to show, copy and open them); when given,
+        # this replaces `prompt` for the device-code instructions.
+        self._on_device_code = on_device_code
+        self._interactive_timeout = interactive_timeout  # browser sign-in: give up after N seconds
+        self._pending_flow: dict | None = None
         self._lock = threading.Lock()
 
     # -- cache persistence -------------------------------------------------- #
@@ -365,9 +380,35 @@ class UserTokenProvider:
                     "Could not start device-code flow: "
                     f"{flow.get('error_description', 'unknown error')}"
                 )
-            self._prompt(flow["message"])  # "Go to https://microsoft.com/devicelogin ..."
-            return self._app.acquire_token_by_device_flow(flow)  # blocks until done
+            if self._on_device_code is not None:
+                self._on_device_code(DeviceCode(
+                    user_code=str(flow["user_code"]),
+                    verification_uri=str(flow.get("verification_uri") or "https://microsoft.com/devicelogin"),
+                    message=str(flow.get("message", "")),
+                ))
+            else:
+                self._prompt(flow["message"])  # "Go to https://microsoft.com/devicelogin ..."
+            self._pending_flow = flow
+            try:
+                result = self._app.acquire_token_by_device_flow(flow)  # blocks until done
+            finally:
+                self._pending_flow = None
+            if flow.get("cancelled"):
+                raise AuthenticationError("Sign-in was cancelled.")
+            return result
+        if self._interactive_timeout is not None:
+            return self._app.acquire_token_interactive(scopes=scopes, timeout=self._interactive_timeout)
         return self._app.acquire_token_interactive(scopes=scopes)
+
+    def cancel_sign_in(self) -> None:
+        """Stop a device-code sign-in that is waiting for the user (safe to call from another thread).
+
+        MSAL polls until the flow's ``expires_at`` has passed and checks it about once a second, so
+        expiring the flow ends the wait. A no-op when nothing is pending."""
+        flow = self._pending_flow
+        if flow is not None:
+            flow["cancelled"] = True
+            flow["expires_at"] = 0
 
     def get_token(self) -> str:
         with self._lock:
