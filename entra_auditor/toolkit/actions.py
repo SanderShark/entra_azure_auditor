@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterable, Literal, Mapping
 
 from ..graph.client import GraphClient, GraphError, GraphPermissionError
 from . import audit_log
+from .admin_units import AdminUnit, AuMember
 from .models import GroupSummary, UserSummary
 from .odata import segment
 from .passwords import password_problems
@@ -39,6 +40,9 @@ ROLES_GROUP_OWNERS = ("Groups Administrator",)
 ROLES_ROLE_GROUPS = ("Privileged Role Administrator",)
 ROLES_CERT_IDS = ("Privileged Authentication Administrator",)
 ROLES_CERT_IDS_SYNCED = ("Hybrid Identity Administrator",)
+ROLES_ADMIN_UNITS = ("Privileged Role Administrator",)
+EDITABLE_AU_FIELDS = ("displayName", "description", "membershipType", "membershipRule",
+                      "membershipRuleProcessingState")
 
 EDITABLE_USER_FIELDS = {
     "displayName", "givenName", "surname", "jobTitle", "department", "officeLocation",
@@ -424,3 +428,112 @@ def _record(plan: ActionPlan, result: ActionResult, actor: str, log_path: Any) -
         }, path=log_path)
     except OSError:
         result.lines.append("(warning: could not write the local action log)")
+
+
+# --------------------------------------------------------------------------- #
+# Administrative units
+# --------------------------------------------------------------------------- #
+
+def _au_plan(action: str, title: str, unit: AdminUnit, requests: list[PlannedRequest],
+             details: list[str]) -> ActionPlan:
+    return ActionPlan(action=action, title=title, target_type="administrative unit", target_id=unit.id,
+                      target_name=unit.label, requests=requests, details=details,
+                      suggested_roles=ROLES_ADMIN_UNITS)
+
+
+def _au_manual_membership(unit: AdminUnit) -> None:
+    if unit.is_dynamic:
+        raise PlanError(f"{unit.label} has dynamic membership: its members come from its rule. Change the rule, "
+                        "or switch it to assigned membership first.")
+
+
+def _restricted_group_problem(member: AuMember) -> str | None:
+    """Restricted-management AUs only take plain cloud security groups (Graph rejects the rest)."""
+    if member.kind != "group":
+        return None
+    if member.unified or member.mail_enabled or not member.security_enabled or member.synced:
+        return f"{member.label} (only cloud security groups that aren't mail-enabled can be added)"
+    return None
+
+
+def plan_add_au_members(unit: AdminUnit, members: list[AuMember], base: str = DEFAULT_GRAPH_BASE) -> ActionPlan:
+    _au_manual_membership(unit)
+    if not members:
+        raise PlanError("Nothing to add.")
+    if unit.restricted:
+        problems = [p for p in (_restricted_group_problem(m) for m in members) if p]
+        if problems:
+            raise PlanError(f"{unit.label} is a restricted management unit and can't take: " + "; ".join(problems))
+    plan = _au_plan(
+        "admin_unit.add_members", f"Add {len(members)} member(s) to {unit.label}", unit,
+        [PlannedRequest("POST", f"/directory/administrativeUnits/{segment(unit.id)}/members/$ref",
+                        _ref_body(base, m.id), f"Add {m.kind} {m.label}") for m in members],
+        [f"+ {m.kind}: {m.label}" for m in members])
+    if unit.restricted:
+        plan.warnings.append("Restricted management unit: once added, tenant-wide admins can no longer manage these "
+                             "objects; only admins assigned roles scoped to this unit can.")
+    return plan
+
+
+def plan_remove_au_members(unit: AdminUnit, members: list[AuMember]) -> ActionPlan:
+    _au_manual_membership(unit)
+    if not members:
+        raise PlanError("Nothing to remove.")
+    plan = _au_plan(
+        "admin_unit.remove_members", f"Remove {len(members)} member(s) from {unit.label}", unit,
+        [PlannedRequest("DELETE", f"/directory/administrativeUnits/{segment(unit.id)}/members/{segment(m.id)}/$ref",
+                        None, f"Remove {m.kind} {m.label}") for m in members],
+        [f"- {m.kind}: {m.label}" for m in members])
+    plan.warnings.append("Admins whose roles are scoped to this unit lose control of the removed objects.")
+    return plan
+
+
+def _au_current(unit: AdminUnit) -> dict[str, Any]:
+    return {"displayName": unit.display_name, "description": unit.description,
+            "membershipType": (unit.membership_type or "assigned").lower(), "membershipRule": unit.membership_rule,
+            "membershipRuleProcessingState": unit.processing_state}
+
+
+def plan_update_admin_unit(unit: AdminUnit, changes: Mapping[str, Any]) -> ActionPlan:
+    unknown = set(changes) - set(EDITABLE_AU_FIELDS)
+    if unknown:
+        raise PlanError("These settings can't be changed here: " + ", ".join(sorted(unknown))
+                        + (" (restricted management is fixed when the unit is created)"
+                           if "isMemberManagementRestricted" in unknown else ""))
+    current = _au_current(unit)
+    wanted = dict(changes)
+    if "membershipType" in wanted and wanted["membershipType"] is not None:
+        wanted["membershipType"] = str(wanted["membershipType"]).strip().lower()
+        if wanted["membershipType"] not in ("assigned", "dynamic"):
+            raise PlanError("Membership type must be assigned or dynamic.")
+    if "membershipRuleProcessingState" in wanted and wanted["membershipRuleProcessingState"] not in (None, "On", "Paused"):
+        raise PlanError("Rule processing must be On or Paused.")
+    for key in ("displayName", "description", "membershipRule"):
+        if isinstance(wanted.get(key), str):
+            wanted[key] = wanted[key].strip() or None
+    effective = {k: v for k, v in wanted.items() if (current.get(k) or None) != (v or None)}
+    if not effective:
+        raise PlanError("Nothing to change: the unit already has those settings.")
+    if "displayName" in effective and not effective["displayName"]:
+        raise PlanError("An administrative unit needs a name.")
+    if len(effective.get("displayName") or "") > 256:
+        raise PlanError("The name can be at most 256 characters.")
+    final = {**current, **effective}
+    if final["membershipType"] == "dynamic" and not final.get("membershipRule"):
+        raise PlanError("Dynamic membership needs a membership rule.")
+    if final["membershipType"] == "dynamic" and not final.get("membershipRuleProcessingState"):
+        effective["membershipRuleProcessingState"] = "On"     # a new rule does nothing until processing is on
+    plan = _au_plan(
+        "admin_unit.update", f"Change settings of {unit.label}", unit,
+        [PlannedRequest("PATCH", f"/directory/administrativeUnits/{segment(unit.id)}", dict(effective),
+                        "Update settings")],
+        [f"{k}: {_show(current.get(k))} -> {_show(v)}" for k, v in effective.items()])
+    if effective.get("membershipType") == "dynamic":
+        plan.warnings.append("Switching to dynamic membership replaces the current members with whoever matches "
+                             "the rule (needs Entra ID P1).")
+    elif effective.get("membershipType") == "assigned":
+        plan.warnings.append("Switching to assigned membership stops the rule; members are then managed by hand.")
+    if "membershipRule" in effective and final["membershipType"] == "dynamic":
+        plan.warnings.append("A new rule re-evaluates every user and device; check it before applying.")
+    return plan
+

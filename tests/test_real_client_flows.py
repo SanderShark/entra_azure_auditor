@@ -109,3 +109,22 @@ def test_group_pim_activation_posts_to_the_documented_endpoint():
                     "justification": "INC-1", "scheduleInfo": {"startDateTime": "2026-01-02T03:04:00Z",
                                                               "expiration": {"type": "afterDuration", "duration": "PT1H"}}}
     assert result.active_now
+
+
+def test_administrative_unit_changes_use_the_documented_requests(tmp_path):
+    from entra_auditor.toolkit.admin_units import AdminUnit, AuMember
+
+    seen, handler = recorder()
+    client = client_for(handler)
+    log = tmp_path / "log.jsonl"
+    unit = AdminUnit(id="au1", display_name="Seattle")
+    member = AuMember(id="u1", kind="user", name="Alice")
+    execute_plan(client, actions.plan_add_au_members(unit, [member], client.base_url), log_path=log)
+    execute_plan(client, actions.plan_remove_au_members(unit, [member]), log_path=log)
+    execute_plan(client, actions.plan_update_admin_unit(unit, {"description": "Office"}), log_path=log)
+    assert seen == [
+        ("POST", "/v1.0/directory/administrativeUnits/au1/members/$ref",
+         {"@odata.id": "https://graph.microsoft.com/v1.0/directoryObjects/u1"}),
+        ("DELETE", "/v1.0/directory/administrativeUnits/au1/members/u1/$ref", None),
+        ("PATCH", "/v1.0/directory/administrativeUnits/au1", {"description": "Office"}),
+    ]

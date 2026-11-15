@@ -25,7 +25,7 @@ def G(i, name, **kw):
 
 class FakeTenant:
     base_url = BASE
-    ROLE_FOR_WRITES = {'User Administrator', 'Groups Administrator', 'Helpdesk Administrator', 'Privileged Authentication Administrator', 'Global Administrator', 'Authentication Administrator'}
+    ROLE_FOR_WRITES = {'Privileged Role Administrator', 'User Administrator', 'Groups Administrator', 'Helpdesk Administrator', 'Privileged Authentication Administrator', 'Global Administrator', 'Authentication Administrator'}
 
     def __init__(self, *, propagation_delay=0, require_mfa=(), eligible=('User Administrator', 'Groups Administrator', 'Global Reader')):
         self.users = {u['id']: u for u in [U('u-alice', 'Alice Ng', 'alice@contoso.com', employeeId='E100', jobTitle='Engineer', department='IT', proxyAddresses=['SMTP:alice@contoso.com', 'smtp:a.ng@contoso.com'], otherMails=['alice@home.example']), U('u-bob', 'Bob Stone', 'bob@contoso.com'), U('u-bob2', 'Bob Smith', 'bob.smith@contoso.com'), U('u-guest', 'Partner Guest', 'partner_x.com#EXT#@contoso.onmicrosoft.com', userType='Guest', mail='partner@x.com'), U('u-sync', 'Sync Sam', 'sam@contoso.com', onPremisesSyncEnabled=True), U('u-admin', 'Ada Admin', 'ada@contoso.com'), U('u-obrien', "Pat O'Brien", 'pat@contoso.com'), U('11111111-2222-3333-4444-555555555555', 'Gina Guid', 'gina@contoso.com')]}
@@ -46,6 +46,11 @@ class FakeTenant:
         self.group_eligible = []
         self.group_active = {}
         self.group_roles = {}
+        # administrative units (opt-in; see add_admin_unit)
+        self.admin_units = {}
+        self.au_members = {}
+        self.au_roles = []           # (au id, role name, principal id, 'active'|'eligible')
+        self.au_scope_filter_supported = True
 
     def add_pim_group(self, gid, name, roles=(), access='member', role_assignable=True):
         """A group you are eligible for (membership by default) that holds `roles`."""
@@ -53,6 +58,22 @@ class FakeTenant:
         self.group_eligible.append((gid, access))
         self.group_roles[gid] = list(roles)
         return self
+
+    def add_admin_unit(self, au_id, name, members=(), **props):
+        self.admin_units[au_id] = {'id': au_id, 'displayName': name, 'description': props.pop('description', None),
+                                   'membershipType': None, 'membershipRule': None,
+                                   'membershipRuleProcessingState': None, 'isMemberManagementRestricted': None,
+                                   'visibility': None, **props}
+        self.au_members[au_id] = set(members)
+        return self
+
+    def _object(self, oid):
+        if oid in self.users:
+            return {**self.users[oid], '@odata.type': '#microsoft.graph.user'}
+        if oid in self.groups:
+            return {**self.groups[oid], '@odata.type': '#microsoft.graph.group'}
+        return {'id': oid, '@odata.type': '#microsoft.graph.device', 'displayName': oid, 'operatingSystem': 'Windows',
+                'accountEnabled': True}
 
     def _granted_by_groups(self):
         return {r for (gid, access) in self.group_active if access == 'member' for r in self.group_roles.get(gid, [])}
@@ -81,6 +102,38 @@ class FakeTenant:
             yield from self._groups(flt, params)
             return
         if path == '/servicePrincipals':
+            return
+        if path == '/directory/administrativeUnits':
+            for au in self.admin_units.values():
+                yield {k: v for k, v in au.items() if k in (kw.get('select') or au)}
+            return
+        m = re.match('/directory/administrativeUnits/([^/]+)/members$', path)
+        if m:
+            if m.group(1) not in self.admin_units:
+                raise GraphNotFoundError('404', status_code=404)
+            for oid in sorted(self.au_members[m.group(1)]):
+                yield self._object(oid)
+            return
+        m = re.match('/directory/administrativeUnits/([^/]+)/scopedRoleMembers$', path)
+        if m:
+            for au, role, pid, state in self.au_roles:
+                if au == m.group(1) and state == 'active':
+                    yield {'id': f'srm-{pid}', 'roleId': f'dr-{role}', 'administrativeUnitId': au,
+                           'roleMemberInfo': {'id': pid, 'displayName': self._object(pid).get('displayName')}}
+            return
+        if 'directoryScopeId' in flt and path in ('/roleManagement/directory/roleAssignments',
+                                                   '/roleManagement/directory/roleEligibilitySchedules'):
+            if not self.au_scope_filter_supported:
+                raise GraphError('Unsupported query.', status_code=400, code='Request_UnsupportedQuery')
+            want = 'active' if path.endswith('roleAssignments') else 'eligible'
+            for au, role, pid, state in self.au_roles:
+                if f'/administrativeUnits/{au}' in flt and state == want:
+                    obj = self._object(pid)
+                    rid = self.role_ids.setdefault(role, f"r-{role.lower().replace(' ', '-')}")
+                    yield {'roleDefinitionId': rid, 'principalId': pid,
+                           'directoryScopeId': f'/administrativeUnits/{au}',
+                           'principal': {'id': pid, 'displayName': obj.get('displayName'),
+                                         'userPrincipalName': obj.get('userPrincipalName')}}
             return
         m = re.match('/(users|groups)/([^/]+)/(\\w+)$', path)
         if m:
@@ -163,6 +216,15 @@ class FakeTenant:
             if m.group(1) not in self.groups:
                 raise GraphNotFoundError('404', status_code=404)
             return dict(self.groups[m.group(1)])
+        m = re.match('/directory/administrativeUnits/([^/]+)$', path)
+        if m:
+            if m.group(1) not in self.admin_units:
+                raise GraphNotFoundError('404', status_code=404)
+            return dict(self.admin_units[m.group(1)])
+        m = re.match('/directoryRoles/dr-(.+)$', path)
+        if m:
+            from urllib.parse import unquote
+            return {'displayName': unquote(m.group(1))}
         m = re.match('/users/[^/]+/authentication/operations/(\\w+)$', path)
         if m:
             self.reset_polls += 1
@@ -195,6 +257,30 @@ class FakeTenant:
             if uid not in store.get(gid, set()):
                 raise GraphError('not a member', status_code=404)
             store[gid].remove(uid)
+            return GraphResponse(204)
+        m = re.match('/directory/administrativeUnits/([^/]+)/members/\\$ref$', path)
+        if m and method == 'POST':
+            au = self.admin_units[m.group(1)]
+            oid = json['@odata.id'].rsplit('/', 1)[-1]
+            if (au.get('membershipType') or '').lower() == 'dynamic':
+                raise GraphError('Members of a dynamic administrative unit cannot be managed manually.', status_code=400)
+            if au.get('isMemberManagementRestricted') and oid in self.groups and (
+                    self.groups[oid].get('mailEnabled') or 'Unified' in self.groups[oid].get('groupTypes', [])):
+                raise GraphError('This group type cannot be added to a restricted administrative unit.', status_code=400)
+            if oid in self.au_members[m.group(1)]:
+                raise GraphError("One or more added object references already exist for the following modified properties: 'members'.", status_code=400)
+            self.au_members[m.group(1)].add(oid)
+            return GraphResponse(204)
+        m = re.match('/directory/administrativeUnits/([^/]+)/members/([^/]+)/\\$ref$', path)
+        if m and method == 'DELETE':
+            au_id, oid = m.groups()
+            if oid not in self.au_members.get(au_id, set()):
+                raise GraphError('not a member', status_code=404)
+            self.au_members[au_id].remove(oid)
+            return GraphResponse(204)
+        m = re.match('/directory/administrativeUnits/([^/]+)$', path)
+        if m and method == 'PATCH':
+            self.admin_units[m.group(1)].update(json)
             return GraphResponse(204)
         m = re.match('/users/([^/]+)$', path)
         if m and method == 'PATCH':
