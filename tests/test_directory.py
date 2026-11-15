@@ -86,3 +86,24 @@ def test_a_scope_becomes_a_server_side_filter_and_an_unknown_one_is_refused():
     assert set(USER_SCOPES) == {"all", "members", "guests", "synced"}
     with pytest.raises(ValueError, match="Unknown user scope"):
         load_users(t, scope="everyone")
+
+
+def test_external_users_can_be_left_out_while_loading_and_progress_still_counts_every_page():
+    from entra_auditor.toolkit.directory import LoadCancelled, is_external, load_users
+    from tests.fakes import FakeTenant, U
+    assert is_external("partner_x.com#EXT#@contoso.onmicrosoft.com") and is_external("a_b.com#ext#@c.onmicrosoft.com")
+    assert not is_external("ext@contoso.com") and not is_external(None)
+    t = FakeTenant()
+    for i in range(20):                                         # cross-tenant-synced users are Members with #EXT#
+        t.users[f"x{i}"] = U(f"x{i}", f"Synced {i}", f"s{i}_fabrikam.com#EXT#@contoso.onmicrosoft.com")
+    assert len(load_users(t)) == 28
+    kept = load_users(t, exclude_external=True)
+    assert len(kept) == 7 and not any(is_external(u.upn) for u in kept)      # the guest goes as well
+    assert len(load_users(t, scope="members", exclude_external=True)) == 7
+    seen, checks = [], []
+    load_users(t, exclude_external=True, page_size=5, on_progress=seen.append,
+               should_cancel=lambda: checks.append(1) and False)
+    assert len(checks) >= 5 and seen[-1] == 7                   # checked once per page scanned, not per page kept
+    import pytest
+    with pytest.raises(LoadCancelled):
+        load_users(t, exclude_external=True, page_size=5, should_cancel=lambda: True)

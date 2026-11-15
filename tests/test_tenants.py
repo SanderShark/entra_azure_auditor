@@ -109,3 +109,14 @@ def test_a_tenant_can_name_the_users_to_load_and_a_wrong_name_is_refused():
     with pytest.raises(TenantConfigError, match="user_scope must be one of"):
         parse_tenants(base % ', "user_scope": "everyone"')
     assert set(USER_SCOPE_NAMES) == set(USER_SCOPES)            # the two lists must not drift apart
+
+
+def test_a_tenant_can_start_with_external_users_hidden():
+    import pytest
+
+    from entra_auditor.tenants import TenantConfigError, parse_tenants
+    base = '{"tenants": [{"name": "Big", "tenant_id": "contoso.com", "client_id": "c1"%s}]}'
+    assert parse_tenants(base % "")[0].hide_external is False
+    assert parse_tenants(base % ', "hide_external": true')[0].hide_external is True
+    with pytest.raises(TenantConfigError, match="hide_external must be true or false"):
+        parse_tenants(base % ', "hide_external": "yes"')

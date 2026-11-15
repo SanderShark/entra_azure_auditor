@@ -11,8 +11,9 @@ or point ``AUDITOR_TENANTS_FILE`` at the file itself)::
     ]}
 
 ``user_scope`` (optional) is which users the desktop app loads at start: ``all`` (default), ``members``,
-``guests`` or ``synced`` (synced from on-premises AD). Set it for tenants with far more user objects than
-people; it can still be switched in the app.
+``guests`` or ``synced`` (synced from on-premises AD). ``hide_external`` (optional, true/false) starts with
+external users (``#EXT#`` in the sign-in name: guests and cross-tenant-synced users) left out of the list.
+Set them for tenants with far more user objects than people; both can still be switched in the app.
 
 It holds no secrets: the desktop app signs in as a user, so each app registration is a public client.
 Without the file, the tenant from the environment (``AZURE_TENANT_ID`` / ``AZURE_CLIENT_ID``, usually
@@ -50,6 +51,7 @@ class TenantConfig:
     client_id: str
     authority_host: str = DEFAULT_AUTHORITY_HOST
     user_scope: str = "all"
+    hide_external: bool = False
 
     @property
     def key(self) -> str:
@@ -92,7 +94,10 @@ def _validated(entry: object, where: str) -> TenantConfig:
     scope = entry.get("user_scope", "all")
     if scope not in USER_SCOPE_NAMES:
         raise TenantConfigError(f"{where}: user_scope must be one of {', '.join(USER_SCOPE_NAMES)}, not {scope!r}.")
-    return TenantConfig(values["name"], values["tenant_id"], values["client_id"], host.rstrip("/"), scope)
+    hide_external = entry.get("hide_external", False)
+    if not isinstance(hide_external, bool):
+        raise TenantConfigError(f"{where}: hide_external must be true or false.")
+    return TenantConfig(values["name"], values["tenant_id"], values["client_id"], host.rstrip("/"), scope, hide_external)
 
 
 def parse_tenants(text: str, source: str = "tenants.json") -> list[TenantConfig]:

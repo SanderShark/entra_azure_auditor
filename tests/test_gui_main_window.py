@@ -751,3 +751,16 @@ def test_the_app_signs_in_again_after_a_switch_and_ends_otherwise():
     assert session_loop(lambda: None, lambda s: False) == 1     # the first sign-in was cancelled
     sessions = iter(["contoso", None])
     assert session_loop(lambda: next(sessions), lambda s: True) == 0     # cancelled after a switch: just end
+
+
+def test_hiding_external_users_reloads_without_them_and_says_so(qtbot, window):
+    win = window()
+    assert win.model.rowCount() == 8 and not win.hide_external_box.isChecked()
+    win.hide_external_box.setChecked(True)
+    qtbot.waitUntil(lambda: not win.loading and win.model.rowCount() == 7)
+    assert not any("#EXT#" in (u.upn or "") for u in win.model.users)
+    assert win.count_label.text() == "7 users (external hidden)"
+    win.scope_box.setCurrentIndex(win.scope_box.findData("members"))
+    qtbot.waitUntil(lambda: not win.loading and win.count_label.text() == "7 users (members only, external hidden)")
+    win.hide_external_box.setChecked(False)
+    qtbot.waitUntil(lambda: not win.loading and win.count_label.text() == "7 users (members only)")

@@ -26,6 +26,11 @@ USER_SCOPES: dict[str, tuple[str, Optional[str]]] = {
     "synced": ("Synced from on-premises AD", "onPremisesSyncEnabled eq true"),
 }
 DEFAULT_USER_SCOPE = "all"
+EXTERNAL_MARKER = "#ext#"     # in the UPN of every external user (B2B guests AND cross-tenant-synced members)
+
+
+def is_external(upn: Optional[str]) -> bool:
+    return EXTERNAL_MARKER in (upn or "").lower()
 
 
 class LoadCancelled(Exception):
@@ -39,15 +44,24 @@ def load_users(
     should_cancel: Optional[Callable[[], bool]] = None,
     page_size: int = PAGE_SIZE,
     scope: str = DEFAULT_USER_SCOPE,
+    exclude_external: bool = False,
 ) -> list[UserSummary]:
     """Every user in ``scope`` (see USER_SCOPES), sorted by display name. Reports the running count once
-    per page."""
+    per page.
+
+    ``exclude_external`` drops users whose UPN contains ``#EXT#`` as the pages arrive, so they never take
+    memory or list rows. Graph can't filter on that server-side (no ``contains`` on userPrincipalName), so
+    their pages are still downloaded: combine it with a narrower scope when the download is what hurts.
+    """
     if scope not in USER_SCOPES:
         raise ValueError(f"Unknown user scope {scope!r}; use one of: {', '.join(USER_SCOPES)}.")
     users: list[UserSummary] = []
+    scanned = 0
     for raw in graph.get_paged("/users", select=USER_SELECT, top=page_size, filter=USER_SCOPES[scope][1]):
-        users.append(_user(raw, ""))
-        if len(users) % page_size == 0:
+        scanned += 1
+        if not (exclude_external and is_external(raw.get("userPrincipalName"))):
+            users.append(_user(raw, ""))
+        if scanned % page_size == 0:
             if should_cancel is not None and should_cancel():
                 raise LoadCancelled()
             if on_progress is not None:

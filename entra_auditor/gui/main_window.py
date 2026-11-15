@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QComboBox,
     QDialog,
@@ -102,6 +103,11 @@ class MainWindow(QMainWindow):
         for key, (label, _filter) in USER_SCOPES.items():
             self.scope_box.addItem(label, key)
         self.scope_box.setCurrentIndex(max(self.scope_box.findData(getattr(session.tenant, "user_scope", "all")), 0))
+        self.hide_external_box = QCheckBox("Hide external (#EXT#)")
+        self.hide_external_box.setToolTip("Leave out users whose sign-in name contains #EXT#: guests and users synced "
+                                          "from other tenants. They are skipped while loading (their pages are "
+                                          "still downloaded; a narrower choice on the left avoids that).")
+        self.hide_external_box.setChecked(bool(getattr(session.tenant, "hide_external", False)))
         self.table = QTableView()
         self.table.setModel(self.proxy)
         self.table.setSortingEnabled(True)
@@ -124,6 +130,7 @@ class MainWindow(QMainWindow):
         filter_row = QHBoxLayout()
         filter_row.addWidget(self.filter_edit, 1)
         filter_row.addWidget(self.scope_box)
+        filter_row.addWidget(self.hide_external_box)
         middle_layout.addLayout(filter_row)
         middle_layout.addWidget(self.table)
         middle_layout.addWidget(self.count_label)
@@ -210,6 +217,7 @@ class MainWindow(QMainWindow):
         self.proxy.layoutChanged.connect(self._update_count)
         self.load_progress.connect(self._on_progress)
         self.scope_box.currentIndexChanged.connect(lambda _index: self.load_directory(restart=True))
+        self.hide_external_box.toggled.connect(lambda _on: self.load_directory(restart=True))
         self.nav.currentRowChanged.connect(self._section_changed)
         self._update_count()
 
@@ -275,12 +283,14 @@ class MainWindow(QMainWindow):
             return
         self._load_generation += 1
         generation, graph, scope = self._load_generation, self.session.graph, self.user_scope
+        hide_external = self.hide_external_box.isChecked()
         self.loading = True
         self.refresh_action.setEnabled(False)
         self._load_started = time.perf_counter()
         self.statusBar().showMessage("Loading users...")
         self.runner.submit(
             lambda: self._loader(graph, on_progress=self.load_progress.emit, scope=scope,
+                                 exclude_external=hide_external,
                                  should_cancel=lambda: self._closing or generation != self._load_generation),
             lambda users: self._loaded(generation, users),
             lambda exc: self._load_failed(generation, exc))
@@ -330,7 +340,9 @@ class MainWindow(QMainWindow):
         if self.loading and total == 0:
             self.count_label.setText("Loading...")
         else:
-            scope = "" if self.user_scope == "all" else f" ({USER_SCOPES[self.user_scope][0].lower()})"
+            notes = [n for n in ("" if self.user_scope == "all" else USER_SCOPES[self.user_scope][0].lower(),
+                                 "external hidden" if self.hide_external_box.isChecked() else "") if n]
+            scope = f" ({', '.join(notes)})" if notes else ""
             noun = "user" if total == 1 else "users"
             self.count_label.setText((f"{total:,} {noun}" if shown == total else f"{shown:,} of {total:,} {noun}") + scope)
 
