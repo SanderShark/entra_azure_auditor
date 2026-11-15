@@ -27,6 +27,12 @@ class UserSummary(BaseModel):
         return self.upn or self.mail or self.display_name or self.id
 
     @property
+    def full_label(self) -> str:
+        """'Chris Flores (cflores53@contoso.com)': used in change previews so you can confirm WHO."""
+        name = self.display_name
+        return f"{name} ({self.label})" if name and name != self.label else self.label
+
+    @property
     def is_guest(self) -> bool:
         return (self.user_type or "").lower() == "guest"
 

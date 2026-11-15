@@ -1,6 +1,6 @@
 # Entra Security Auditor
 
-A **read-only** command line tool that audits a Microsoft Entra ID (Azure AD) tenant through the
+A command line tool that **audits** a Microsoft Entra ID (Azure AD) tenant through the
 Microsoft Graph API and explains what it finds.
 
 It checks for:
@@ -16,7 +16,16 @@ It checks for:
 
 Results are printed in the terminal and can be exported as JSON or CSV.
 
-> The tool only needs **read** permissions and never changes your tenant.
+- **Unowned, empty and stale groups**: owners and users confirmed per group; mail-enabled security groups
+  and distribution lists are skipped (they are managed in Exchange); "stale" also requires that nothing
+  visibly uses the group (app assignments, nesting, directory roles, licences, Teams, Conditional Access)
+
+It also includes an **identity toolkit** (`auditor id | group | pim | toolkit`) to look up identities and make
+changes, with just-in-time elevation through PIM.
+
+> **The audit is read-only** (it never changes your tenant and needs only read permissions).
+> **The toolkit writes**, so it uses a separate, explicit set of permissions, previews every change,
+> asks before applying it, and records it in a local log. See [Identity toolkit](#identity-toolkit).
 
 ---
 
@@ -36,6 +45,8 @@ python -m entra_auditor menu          # or use the interactive menu
 ```
 
 After `pip install -e .` you can type `auditor ...` instead of `python -m entra_auditor ...`.
+
+Note the `-m`: `python entra_auditor ...` (a path) fails with "attempted relative import", and `entra_auditor ...` isn't a command (the installed command is `auditor`). Help is `--help`, not `help`.
 
 ## Connect it to your tenant
 
@@ -76,7 +87,8 @@ will see "data unavailable" for things like Conditional Access.
 | `RoleAssignmentSchedule.Read.Directory` | permanent vs time-bound assignments |
 | `Policy.Read.All` | Conditional Access, security defaults |
 | `Application.Read.All` | app registrations, service principals |
-| `Group.Read.All` | names/sizes of groups used in CA exclusions and role groups |
+| `Group.Read.All` | names/sizes of groups used in CA exclusions and role groups, group audit |
+| `Directory.Read.All` | group audit usage signals (app assignments, nesting, directory roles) |
 
 Some data needs **Entra ID P1/P2** (sign-in activity, Conditional Access, PIM). Without it the tool tells
 you which checks were skipped instead of failing. `auditor permissions` shows what your token has.
@@ -92,6 +104,7 @@ you which checks were skipped instead of failing. `auditor permissions` shows wh
 | `auditor compare [OLD] [NEW]` | New, resolved and changed findings between two runs |
 | `auditor runs` / `export` | List saved runs / write JSON and CSV reports |
 | `auditor permissions` | Needed vs granted Graph permissions |
+| `auditor id ...`, `group ...`, `pim ...`, `toolkit` | Identity toolkit (see below) |
 | `auditor login` / `logout` / `whoami` | Manage the user sign-in (user modes) |
 | `auditor menu` | Arrow-key menu over all of the above |
 
@@ -115,6 +128,61 @@ Thresholds (inactivity days, max Global Admins, ...) live in `AuditConfig`
 (`entra_auditor/checks/_common.py`); the common ones are CLI flags (`--inactive-days`, `--guest-days`,
 `--admin-days`).
 
+## Identity toolkit
+
+Look people up, fix things, and elevate only when needed. It is meant for **user sign-in**
+(`--mode device` or `browser`; the toolkit defaults to device code if your environment is set to `app`),
+so you can sign in holding **no admin role** and activate one through PIM only for the task.
+
+```bash
+auditor id search bob@contoso.com          # by UPN, email or alias address, name, employee id, alias, object id
+auditor id show bob@contoso.com            # attributes, sign-in, groups, roles, auth methods, certificate IDs
+auditor id edit bob --set title="Staff Engineer" --set dept=IT
+auditor id password bob                    # Entra generates it; shown once, never logged (--prompt / --local)
+auditor id cert-add bob --type ski AB:CD:EF # prefix X509:<SKI> pre-filled; you paste only the data
+auditor id disable bob  /  enable  /  revoke
+auditor group add-member "Finance Share" bob alice
+auditor group add-owner  "Project X" bob   # the usual fix for an unowned group
+auditor group stale --only unowned --export unowned-groups.csv    # from the latest audit
+auditor pim list | activate "User Administrator" --reason INC-123 --minutes 60 | deactivate ...
+auditor toolkit                            # interactive menu over all of this
+```
+
+**How a change works.** Every change is *planned* first (exactly which Graph requests would be sent, with
+secrets redacted), shown to you, and applied only after you confirm. `--dry-run` shows the plan and sends
+nothing; `--yes` skips only the confirmation, never the preview. If Entra answers "forbidden", the tool
+offers to activate a suitable eligible PIM role (it picks from the roles that can do that task), waits for it
+to take effect, refreshes your token and retries. Use `--elevate` / `--no-elevate` / `--reason` to script that.
+Everything applied is appended to `~/.entra_auditor/actions.jsonl` (who, what, to whom, result; never a
+password). `auditor id log` shows recent entries.
+
+**Guards.** The tool refuses, with the reason, changes Graph can't make: groups synced from on-premises AD,
+dynamic-membership groups (membership), and Exchange-managed groups (mail-enabled security, distribution).
+Adding someone already in a group, or removing someone who isn't, is treated as already done.
+
+**Certificate user IDs** (certificate-based authentication). Prefixes are case-sensitive:
+`X509:<PN>`, `<RFC822>`, `<SKI>`, `<SHA1-PUKEY>`, `<I>..<SR>..`, `<I>..<S>..`, `<S>..`. The tool adds the prefix;
+hex values pasted with colons or spaces are tidied. Cloud-only users need at least Privileged Authentication
+Administrator; synced users Hybrid Identity Administrator.
+
+**Setup for the toolkit** (in addition to the audit setup): on the app registration add these **delegated**
+permissions with admin consent, and enable *Allow public client flows*:
+
+| Permission | Used for |
+|---|---|
+| `User.ReadWrite.All` | edit users, enable/disable |
+| `Group.ReadWrite.All` | add/remove group owners (membership alone would need less) |
+| `Directory.Read.All` | read users, groups, memberships |
+| `UserAuthenticationMethod.ReadWrite.All` | password reset, auth methods |
+| `User.RevokeSessions.All` | revoke sessions |
+| `RoleManagement.Read.Directory`, `AuditLog.Read.All` | show roles and last sign-in |
+| `RoleEligibilitySchedule.Read.Directory`, `RoleAssignmentSchedule.ReadWrite.Directory` | see and activate **your own** PIM roles |
+
+These grant the *app* the ability to act, but what a given sign-in can actually do is still limited by the
+roles the signed-in person holds (that is why elevation matters). Set `AUDITOR_TOOLKIT_SCOPES` to drop
+capabilities you don't want (for example remove `UserAuthenticationMethod.ReadWrite.All` if you never reset
+passwords).
+
 ## Security notes
 
 - **Never commit secrets.** `.env`, certificates, token caches and audit output are in `.gitignore`.
@@ -123,7 +191,10 @@ Thresholds (inactivity days, max Global Admins, ...) live in `AuditConfig`
   keep them out of public places, tickets, and chat.
 - In user modes, the token cache (`~/.entra_auditor/token_cache.json`) contains refresh tokens. Treat it
   like a password and use `auditor logout` when finished.
-- Prefer a **certificate** over a client secret, and keep the app registration read-only.
+- Prefer a **certificate** over a client secret. For audits keep the app registration read-only; use the toolkit
+  with a **user sign-in**, not the app's own permissions (`--mode app` works but has no PIM and no
+  per-person accountability, and the tool warns you).
+- Passwords generated or reset by the toolkit are shown once and never written to disk or the action log.
 - CSV exports neutralise spreadsheet formulas (cells beginning `=`, `+`, `-`, `@` get a leading `'`).
 
 ## Project layout
@@ -134,8 +205,10 @@ entra_auditor/
 ├── graph/client.py     # httpx wrapper: paging, retry on 429/503, $select
 ├── graph/collectors.py # users, roles, MFA, CA policies, apps, service principals
 ├── models.py           # Pydantic models, incl. Finding
-├── checks/             # inactive_users, privileged, mfa_ca (+ ca_analysis), stale_apps
+├── checks/             # inactive_users, privileged, mfa_ca (+ ca_analysis), stale_apps, stale_groups
 ├── ca_report.py        # Conditional Access HTML report and Mermaid diagram
+├── cli_common.py       # helpers shared by the audit CLI and the toolkit CLI
+├── toolkit/            # identity toolkit: search, profile, actions (plan/execute), pim, ui, cli
 ├── engine.py           # runs selected checks, produces an AuditRun, diffs runs
 ├── reports.py          # JSON / CSV writers and the local run store
 └── cli.py              # Typer + Rich, interactive menu
@@ -144,12 +217,44 @@ entra_auditor/
 **Roadmap:** PostgreSQL storage (SQLAlchemy + Alembic), a FastAPI REST layer, automated tests and CI,
 Docker Compose.
 
-## Development
+## Development and tests
 
 ```bash
 pip install -r requirements-dev.txt
-ruff check . && mypy entra_auditor && pytest
+python -m pytest                      # the whole suite, a few seconds
+python -m pytest -k pim               # only tests whose name contains "pim"
+python -m pytest --cov=entra_auditor  # with coverage
+ruff check .
 ```
 
-Checks are pure functions of a `TenantSnapshot`, so they can be unit-tested without Graph or a database
-(`respx` is included for testing the Graph client).
+Use `python -m pytest` rather than a bare `pytest`: it always runs under the Python of your active virtualenv. A bare
+`pytest` can resolve to a different installation (system-wide or `~/.local/bin`) that can't see the project's
+packages, which shows up as `ModuleNotFoundError: No module named 'questionary'` (or `typer`, `rich`, ...).
+
+The suite never contacts Microsoft and needs no credentials. Graph is replaced by in-memory fakes
+(`tests/fakes.py`): `FakeTenant` is a small tenant that enforces permissions the way Entra does (writes are
+denied until a PIM role is activated, and a newly activated role can take a moment to take effect), and
+`FakeGraph` serves canned responses. An autouse fixture clears every `AZURE_*`/`AUDITOR_*` variable and points the
+run store, token cache and action log at a temporary directory, so tests can't touch your real settings or your
+home directory.
+
+| Tests | Cover |
+|---|---|
+| `test_odata`, `test_certids`, `test_passwords`, `test_audit_log` | query escaping (injection), certificate-ID formats, password rules, secrets never logged |
+| `test_client`, `test_auth` | paging, retry rules (a POST is never resent after an ambiguous failure), token flows |
+| `test_collectors`, `test_stale_groups` | Graph JSON parsing and how collection degrades when one source fails |
+| `test_checks_*`, `test_ca_analysis` | every check's thresholds, severities and edge cases ("exactly 90 days is not inactive") |
+| `test_engine`, `test_reports`, `test_ca_report` | run orchestration, CSV/JSON/HTML output, formula and markup injection |
+| `test_search`, `test_profile`, `test_actions`, `test_pim` | the identity toolkit: plans, guards, execution, elevation |
+| `test_toolkit_cli`, `test_toolkit_menu`, `test_cli_wiring` | the commands and menus, including the real Typer parsing |
+
+**Adding a check?** Build the smallest snapshot with `tests/builders.py`, call the check, and assert on the
+finding's `check_id` and `severity`. Test the boundary on both sides.
+
+**CI** (`.github/workflows/ci.yml`) runs the suite on Python 3.10 to 3.13, a command-line smoke test, and
+ruff/mypy (advisory until you've had a clean run: delete `continue-on-error` from the ruff step to make it
+block). It has read-only permissions and no secrets. Dependabot keeps dependencies and actions current.
+For a stricter supply chain, pin the actions in `ci.yml` to full commit SHAs.
+
+<!-- Once the repo is on GitHub, add a status badge under the title:
+[![CI](https://github.com/<you>/<repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<you>/<repo>/actions/workflows/ci.yml) -->

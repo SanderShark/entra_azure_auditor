@@ -21,7 +21,7 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
-from ..cli_common import ModeOpt, console, err, fail, sev, t
+from ..cli_common import ModeOpt, console, fail, sev, t
 from ..graph.client import GraphError, GraphPermissionError
 from ..reports import groups_rows, load_run, resolve_run, write_groups_csv
 from . import audit_log
@@ -91,6 +91,8 @@ pim_app = typer.Typer(help="Activate your eligible roles (PIM) just-in-time.", n
                       add_completion=False)
 
 # --- shared option types ------------------------------------------------------
+_USER = Annotated[str, typer.Argument(
+    metavar="USER", help="UPN, email or alias address, name, employee id, mail alias or object id.")]
 ByOpt = Annotated[str, typer.Option(
     "--by", help="How to look the user up: auto | upn | mail | id | name | alias | employee | proxy.")]
 YesOpt = Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt (the preview is still shown).")]
@@ -163,7 +165,7 @@ def id_search(
 
 @id_app.command("show")
 def id_show(
-    ident: Annotated[str, typer.Argument(help="UPN, email, name, employee id, alias or object id.")],
+    ident: _USER,
     by: ByOpt = "auto",
     mode: ModeOpt = None,
 ) -> None:
@@ -177,7 +179,7 @@ def id_show(
 
 @id_app.command("edit")
 def id_edit(
-    ident: Annotated[str, typer.Argument(help="The user to edit.")],
+    ident: _USER,
     set_: Annotated[Optional[list[str]], typer.Option(
         "--set", "-s", help="field=value, repeatable; an empty value clears it. Fields: "
         + ", ".join(sorted(EDITABLE_USER_FIELDS)))] = None,
@@ -216,7 +218,7 @@ def _toggle(ident: str, enabled: bool, by: str, yes: bool, dry_run: bool, elevat
 
 
 @id_app.command("enable")
-def id_enable(ident: Annotated[str, typer.Argument(help="The user.")], by: ByOpt = "auto", yes: YesOpt = False,
+def id_enable(ident: _USER, by: ByOpt = "auto", yes: YesOpt = False,
               dry_run: DryRunOpt = False, elevate: ElevateOpt = None, reason: ReasonOpt = None,
               minutes: MinutesOpt = 60, mode: ModeOpt = None) -> None:
     """Enable a user account."""
@@ -224,7 +226,7 @@ def id_enable(ident: Annotated[str, typer.Argument(help="The user.")], by: ByOpt
 
 
 @id_app.command("disable")
-def id_disable(ident: Annotated[str, typer.Argument(help="The user.")], by: ByOpt = "auto", yes: YesOpt = False,
+def id_disable(ident: _USER, by: ByOpt = "auto", yes: YesOpt = False,
                dry_run: DryRunOpt = False, elevate: ElevateOpt = None, reason: ReasonOpt = None,
                minutes: MinutesOpt = 60, mode: ModeOpt = None) -> None:
     """Disable a user account (consider `revoke` as well to end live sessions)."""
@@ -232,7 +234,7 @@ def id_disable(ident: Annotated[str, typer.Argument(help="The user.")], by: ByOp
 
 
 @id_app.command("revoke")
-def id_revoke(ident: Annotated[str, typer.Argument(help="The user.")], by: ByOpt = "auto", yes: YesOpt = False,
+def id_revoke(ident: _USER, by: ByOpt = "auto", yes: YesOpt = False,
               dry_run: DryRunOpt = False, elevate: ElevateOpt = None, reason: ReasonOpt = None,
               minutes: MinutesOpt = 60, mode: ModeOpt = None) -> None:
     """Revoke all of a user's sign-in sessions."""
@@ -244,7 +246,7 @@ def id_revoke(ident: Annotated[str, typer.Argument(help="The user.")], by: ByOpt
 
 @id_app.command("password")
 def id_password(
-    ident: Annotated[str, typer.Argument(help="The user.")],
+    ident: _USER,
     prompt_: Annotated[bool, typer.Option("--prompt", help="Type the new password (hidden) instead of generating one.")] = False,
     local: Annotated[bool, typer.Option("--local", help="Generate the password here instead of asking Entra to.")] = False,
     by: ByOpt = "auto",
@@ -279,7 +281,7 @@ def id_password(
 
 
 @id_app.command("cert-list")
-def id_cert_list(ident: Annotated[str, typer.Argument(help="The user.")], by: ByOpt = "auto",
+def id_cert_list(ident: _USER, by: ByOpt = "auto",
                  mode: ModeOpt = None) -> None:
     """List a user's certificate user IDs (certificate-based authentication bindings)."""
     with open_session(mode) as sess, graph_errors():
@@ -301,7 +303,7 @@ def _collect_cert_entries(binding_key: Optional[str], values: list[str], full: l
     entries: list[str] = [normalise_full_entry(f) for f in full]
     if binding_key is None and (entries or values):
         if values and not entries:
-            raise CertIdError("--value needs --type (pn, rfc822, ski, sha1, issuer-serial, issuer-subject, subject).")
+            raise CertIdError("Certificate data needs --type (pn, rfc822, ski, sha1, issuer-serial, issuer-subject, subject).")
         return entries
     if binding_key is None:
         if not is_interactive():
@@ -330,9 +332,13 @@ def _collect_cert_entries(binding_key: Optional[str], values: list[str], full: l
 
 @id_app.command("cert-add")
 def id_cert_add(
-    ident: Annotated[str, typer.Argument(help="The user.")],
+    ident: _USER,
+    data: Annotated[Optional[list[str]], typer.Argument(
+        metavar="[DATA]...",
+        help="The pasted certificate data; the prefix is added for you. Two-part types take two values "
+             "(issuer, then serial or subject).")] = None,
     binding: Annotated[Optional[str], typer.Option("--type", "-t", help="pn | rfc822 | ski | sha1 | issuer-serial | issuer-subject | subject")] = None,
-    value: Annotated[Optional[list[str]], typer.Option("--value", "-v", help="The pasted data (prefix is added for you). Repeat for two-part types (issuer, then serial/subject).")] = None,
+    value: Annotated[Optional[list[str]], typer.Option("--value", "-v", help="Same as the DATA arguments (kept for scripts).")] = None,
     full: Annotated[Optional[list[str]], typer.Option("--full", help="A complete entry, e.g. X509:<PN>user@contoso.com")] = None,
     by: ByOpt = "auto",
     yes: YesOpt = False,
@@ -344,7 +350,7 @@ def id_cert_add(
 ) -> None:
     """Add a certificate user ID. The X509:<type> prefix is pre-filled; you only paste the data."""
     try:
-        new_entries = _collect_cert_entries(binding, value or [], full or [])
+        new_entries = _collect_cert_entries(binding, (data or []) + (value or []), full or [])
     except CertIdError as exc:
         fail(str(exc))
     with open_session(mode) as sess, graph_errors():
@@ -365,7 +371,7 @@ def id_cert_add(
 
 @id_app.command("cert-remove")
 def id_cert_remove(
-    ident: Annotated[str, typer.Argument(help="The user.")],
+    ident: _USER,
     value: Annotated[Optional[list[str]], typer.Option("--value", "-v", help="Full entry to remove (repeatable). Omit to choose from a list.")] = None,
     by: ByOpt = "auto",
     yes: YesOpt = False,
@@ -454,8 +460,8 @@ def _group_members_command(
         _finish(run_action(sess, plan, yes=yes, dry_run=dry_run, elevate=elevate, reason=reason, minutes=minutes))
 
 
-_USERS_ARG = Annotated[list[str], typer.Argument(help="One or more users (UPN, email, name or object id).")]
-_GROUP_ARG = Annotated[str, typer.Argument(help="Group name, mail or object id.")]
+_USERS_ARG = Annotated[list[str], typer.Argument(metavar="USER...", help="One or more users (UPN, email, name or object id).")]
+_GROUP_ARG = Annotated[str, typer.Argument(metavar="GROUP", help="Group name, mail or object id.")]
 
 
 @group_app.command("add-member")

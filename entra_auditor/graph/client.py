@@ -111,6 +111,12 @@ class GraphClient:
     def close(self) -> None:
         self._http.close()
 
+    @property
+    def base_url(self) -> str:
+        """The Graph endpoint in use (e.g. https://graph.microsoft.com/v1.0). Sovereign clouds differ, so
+        directory-object links (group membership) are built from this rather than hard-coded."""
+        return self._base_url
+
     def __enter__(self) -> "GraphClient":
         return self
 

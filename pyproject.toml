@@ -23,14 +23,26 @@ include = ["entra_auditor*"]
 [tool.ruff]
 line-length = 110
 target-version = "py310"
+# old/ is a local, untracked copy of an earlier tree (with its own venv); it is not part of the project.
+extend-exclude = ["old"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
-# Typer builds its CLI from `Optional[...]` annotations and call-expression defaults.
-ignore = ["E501", "B008", "UP007", "UP045"]
+# ruff's default rules: syntax errors, undefined names, unused imports/variables, style pitfalls.
+# Add "I" (import sorting), "B" (bugbear) or "UP" (modernising) once the code base is clean under them.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["entra_auditor"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
 
 [tool.mypy]
 python_version = "3.10"

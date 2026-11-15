@@ -93,7 +93,7 @@ BASELINES: list[Baseline] = [
         strict=lambda p: ((p.strict_mfa and p.covers_guests and p.all_apps
                            and not p.narrowing and not p.risk_based)
                           or (Tag.BLOCK_GUESTS in p.tags and p.all_apps)),
-        loose=lambda p: ((p.strict_mfa and p.covers_guests and not p.risk_based)
+        loose=lambda p: ((p.strict_mfa and p.covers_guests and p.all_apps and not p.risk_based)
                          or Tag.BLOCK_GUESTS in p.tags),
         remediation="Add a policy for guest/external users requiring MFA, or rely on cross-tenant "
                     "access settings to trust the home tenant's MFA.",

@@ -1,9 +1,11 @@
-"""Terminal rendering for the toolkit and the one flow every change goes through:
+"""Terminal rendering for the toolkit, and the terminal driver for the one flow every change goes through:
 
     preview the plan -> confirm -> execute -> (if Entra says "forbidden": offer PIM elevation,
     wait for the role to take effect, refresh the token, retry)
 
-Used by both the Typer commands and the interactive menu, so they behave identically.
+The flow itself (its decisions and the Graph work) is `flow.ChangeFlow`, which knows nothing about
+terminals; `run_action` here answers its steps with prompts. Used by both the Typer commands and the
+interactive menu, so they behave identically.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator, Optional, Sequence
+from typing import Any, ContextManager, Iterator, Optional, Sequence
 
 import typer
 from rich import box
@@ -23,15 +25,22 @@ from rich.table import Table
 from rich.text import Text
 
 from ..cli_common import console, err, fail, t
-from ..graph.client import GraphClient, GraphError
-from .actions import ActionPlan, ActionResult, execute_plan
+from ..graph.client import GraphClient
+from .actions import ActionPlan, ActionResult
+from .flow import (
+    ChangeFlow,
+    Done,
+    NeedsConfirmation,
+    NeedsElevation,
+    NeedsJustification,
+    Notice,
+    activate_and_wait,
+)
 from .models import AppSummary, GroupSummary, UserProfile, UserSummary
-from .pim import PimError, PimRole, PimService
+from .pim import PimRole, PimService
 from .search import AmbiguousIdentity, IdentityNotFound, resolve_group, resolve_user
 
 _sleep = time.sleep        # replaced in tests
-RETRY_ATTEMPTS = 4         # tries after an elevation (the role takes a moment to take effect)
-RETRY_WAIT = 8.0
 
 
 # --------------------------------------------------------------------------- #
@@ -298,100 +307,60 @@ def resolve_group_or_pick(graph: Any, ident: str) -> GroupSummary:
 
 
 # --------------------------------------------------------------------------- #
-# PIM elevation
+# The shared change flow, driven from the terminal
 # --------------------------------------------------------------------------- #
+# The decisions live in flow.ChangeFlow; this section only answers its steps with prompts and
+# renders its notices with Rich, so the commands and the interactive menu behave identically.
+
+_NOTICE_STYLES = {"info": "", "warning": "yellow", "error": "bold red", "success": "green"}
+
+
+class ConsoleReporter:
+    """Renders flow notices on the console and shows a spinner while the flow waits."""
+
+    def notice(self, notice: Notice) -> None:
+        console.print(Text(notice.text, style=_NOTICE_STYLES.get(notice.level, "")))
+
+    def busy(self, text: str) -> ContextManager[Any]:
+        return console.status(text)
+
 
 def activate_role(sess: Session, pim: PimService, role: PimRole, reason: str, minutes: int) -> bool:
     """Activate and wait until it is effective. Returns True when the role is usable."""
-    try:
-        result = pim.activate(role, reason=reason, minutes=minutes)
-    except PimError as exc:
-        console.print(Text(f"Could not activate {role.name}: {exc}", style="bold red"))
-        if exc.hint:
-            console.print(t(exc.hint))
-        return False
-    if result.pending_approval:
-        console.print(Text(f"{role.name} needs approval; the request was sent to the approvers.", style="yellow"))
-        return False
-    with console.status(f"Waiting for {role.name} to become active..."):
-        active = pim.wait_until_active(role.role_id)
-    if not active:
-        console.print(Text(f"{role.name} was requested but isn't showing as active yet; try again shortly.", style="yellow"))
-        return False
-    sess.refresh()
-    console.print(Text(f"{role.name} is active for {minutes} minutes.", style="green"))
-    return True
+    return activate_and_wait(sess, pim, role, reason, minutes, ConsoleReporter())
 
 
-def _elevation_hint(plan: ActionPlan) -> None:
+def _elevation_hint(roles: Sequence[str]) -> None:
     console.print(t("You can activate a role yourself with `auditor pim activate <role>`; this change needs one of: "
-                    + ", ".join(plan.suggested_roles) + "."))
+                    + ", ".join(roles) + "."))
 
 
-def offer_elevation(
-    sess: Session, plan: ActionPlan, *, elevate: Optional[bool], reason: Optional[str],
-    minutes: int, yes: bool,
-) -> bool:
-    """After a 'forbidden': offer to activate a suitable eligible role. True = try again."""
-    console.print(Text("Entra says your current permissions aren't enough for this change.", style="yellow"))
-    if not sess.user_mode:
-        console.print("PIM only works with a user sign-in (--mode device or browser); in app mode the "
-                      "app registration itself lacks the permission.")
-        return False
-    pim = PimService(sess.graph)
-    try:
-        eligible, active = pim.eligible(), pim.active()
-    except GraphError as exc:
-        console.print(t(f"Couldn't read your PIM roles ({exc})."))
-        _elevation_hint(plan)
-        return False
-
-    wanted = {n.lower() for n in plan.suggested_roles}
-    already = [r for r in active if r.name.lower() in wanted]
-    if already:
-        console.print(t(f"You already have {already[0].name} active; refreshing your token and retrying."))
-        sess.refresh()
-        return True
-
-    matches = PimService.match(eligible, plan.suggested_roles, active)
-    if not matches:
-        console.print(t("You aren't eligible for any role that can do this ("
-                        + ", ".join(plan.suggested_roles) + ")."))
-        if eligible:
-            console.print(t("You are eligible for: " + ", ".join(r.name for r in eligible)))
-        return False
-
+def _answer_elevation(
+    step: NeedsElevation, *, elevate: Optional[bool], yes: bool, minutes: int,
+) -> Optional[PimRole]:
+    """Pick a role to activate from the terminal, or None to stop (printing how to do it by hand)."""
+    if elevate is False or (elevate is None and (yes or not is_interactive())):
+        _elevation_hint(step.plan.suggested_roles)
+        return None
+    matches = step.candidate_roles
     role = matches[0]
-    if len(matches) > 1 and is_interactive() and not yes and elevate is not False:
+    if len(matches) > 1 and is_interactive() and not yes:
         for index, candidate in enumerate(matches, 1):
             console.print(t(f"  {index}. {candidate.label}"))
         role = matches[_ask_number(len(matches), "role to activate") - 1]
+    if elevate is None and not typer.confirm(f"Activate {role.label} for {minutes} minutes and retry?", default=True):
+        return None
+    return role
 
-    if elevate is False:
-        _elevation_hint(plan)
-        return False
-    if elevate is None:
-        if yes or not is_interactive():
-            _elevation_hint(plan)
-            return False
-        if not typer.confirm(f"Activate {role.label} for {minutes} minutes and retry?", default=True):
-            return False
 
+def _answer_justification(reason: Optional[str]) -> Optional[str]:
     why = (reason or "").strip()
     if not why and is_interactive():
         why = str(typer.prompt("Justification for activating the role (ticket or task)")).strip()
     if not why:
         console.print("[red]A justification is required: pass --reason.[/]")
-        return False
-    return activate_role(sess, pim, role, why, minutes)
-
-
-# --------------------------------------------------------------------------- #
-# The shared change flow
-# --------------------------------------------------------------------------- #
-
-def _execute(sess: Session, plan: ActionPlan) -> ActionResult:
-    return execute_plan(sess.graph, plan, actor=sess.identity)
+        return None
+    return why
 
 
 def run_action(
@@ -406,27 +375,22 @@ def run_action(
     extra_secrets: Optional[dict[str, str]] = None,
 ) -> ActionResult:
     print_plan(plan)
-    if dry_run:
-        result = execute_plan(sess.graph, plan, actor=sess.identity, dry_run=True)
-        print_result(result)
-        return result
-    if not yes and not typer.confirm("Apply this change?", default=False):
+    flow = ChangeFlow(sess, plan, dry_run=dry_run, minutes=minutes, extra_secrets=extra_secrets,
+                      reporter=ConsoleReporter(), sleep=lambda seconds: _sleep(seconds))
+    step = flow.start()
+    while not isinstance(step, Done):
+        if isinstance(step, NeedsConfirmation):
+            step = flow.confirm(yes or typer.confirm("Apply this change?", default=False))
+        elif isinstance(step, NeedsElevation):
+            step = flow.choose_role(_answer_elevation(step, elevate=elevate, yes=yes, minutes=minutes))
+        elif isinstance(step, NeedsJustification):
+            step = flow.justify(_answer_justification(reason))
+        else:  # pragma: no cover - a new step type without a terminal answer
+            raise TypeError(f"Unhandled flow step: {step!r}")
+    if step.cancelled:
         console.print("[yellow]Cancelled. Nothing was changed.[/]")
-        return ActionResult("skipped", "Cancelled by the user.")
-
-    result = _execute(sess, plan)
-    if result.status == "denied" and offer_elevation(
-        sess, plan, elevate=elevate, reason=reason, minutes=minutes, yes=yes
-    ):
-        for attempt in range(RETRY_ATTEMPTS):
-            result = _execute(sess, plan)
-            if result.status != "denied" or attempt == RETRY_ATTEMPTS - 1:
-                break
-            if attempt == 1:
-                sess.refresh()
-            with console.status("Waiting for the role to take effect..."):
-                _sleep(RETRY_WAIT)
-    if result.status == "ok" and extra_secrets:
-        result.secrets.update(extra_secrets)  # e.g. a password generated locally: shown once
-    print_result(result)
-    return result
+        return step.result
+    if step.activate_manually:
+        _elevation_hint(step.activate_manually)
+    print_result(step.result)
+    return step.result

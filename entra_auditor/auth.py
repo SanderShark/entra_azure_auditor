@@ -98,7 +98,8 @@ class TokenProvider(Protocol):
     provider instead of talking to Entra ID.
     """
 
-    def get_token(self) -> str: ...
+    def get_token(self) -> str:
+        ...
 
 
 @dataclass(frozen=True)

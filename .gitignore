@@ -35,3 +35,7 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# --- Local only -------------------------------------------------------------
+# old/ is an earlier copy of the tree (with scan reports); never commit it.
+old/

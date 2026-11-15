@@ -156,7 +156,7 @@ def plan_update_user(
         raise PlanError("Nothing to change: the user already has those values.")
     plan = ActionPlan(
         action="user.update", title="Update user attributes", target_type="user",
-        target_id=user.id, target_name=user.label,
+        target_id=user.id, target_name=user.full_label,
         requests=[PlannedRequest("PATCH", f"/users/{segment(user.id)}", dict(effective), "Update attributes")],
         details=[f"{k}: {_show(current.get(k))} -> {_show(v)}" for k, v in effective.items()],
         suggested_roles=ROLES_USER_EDIT,
@@ -174,7 +174,7 @@ def plan_set_enabled(user: UserSummary, enabled: bool) -> ActionPlan:
     plan = ActionPlan(
         action="user.enable" if enabled else "user.disable",
         title=f"{'Enable' if enabled else 'Disable'} account", target_type="user",
-        target_id=user.id, target_name=user.label,
+        target_id=user.id, target_name=user.full_label,
         requests=[PlannedRequest("PATCH", f"/users/{segment(user.id)}", {"accountEnabled": enabled},
                                  "Enable account" if enabled else "Disable account")],
         suggested_roles=ROLES_USER_EDIT,
@@ -188,7 +188,7 @@ def plan_set_enabled(user: UserSummary, enabled: bool) -> ActionPlan:
 def plan_revoke_sessions(user: UserSummary) -> ActionPlan:
     return ActionPlan(
         action="user.revoke_sessions", title="Revoke all sign-in sessions", target_type="user",
-        target_id=user.id, target_name=user.label,
+        target_id=user.id, target_name=user.full_label,
         requests=[PlannedRequest("POST", f"/users/{segment(user.id)}/revokeSignInSessions", None,
                                  "Revoke sign-in sessions")],
         warnings=["Signs the user out everywhere; they must sign in again. Access tokens already "
@@ -211,7 +211,7 @@ def plan_reset_password(
             raise PlanError("Password rejected: " + "; ".join(problems) + ".")
     plan = ActionPlan(
         action="user.reset_password", title="Reset password", target_type="user",
-        target_id=user.id, target_name=user.label,
+        target_id=user.id, target_name=user.full_label,
         requests=[PlannedRequest(
             "POST", f"/users/{segment(user.id)}/authentication/methods/{PASSWORD_METHOD_ID}/resetPassword",
             {"newPassword": new_password} if new_password is not None else {},
@@ -237,7 +237,7 @@ def plan_set_certificate_user_ids(
         raise PlanError("No change: the certificate user IDs are already as requested.")
     plan = ActionPlan(
         action="user.certificate_user_ids", title="Update certificate user IDs", target_type="user",
-        target_id=user.id, target_name=user.label,
+        target_id=user.id, target_name=user.full_label,
         requests=[PlannedRequest("PATCH", f"/users/{segment(user.id)}",
                                  {"authorizationInfo": {"certificateUserIds": list(new_ids)}},
                                  f"Set certificateUserIds ({len(new_ids)} entries)")],
@@ -369,8 +369,8 @@ def execute_plan(
     poll_timeout: float = 60.0,
 ) -> ActionResult:
     if dry_run:
-        return ActionResult("dry_run", "Dry run: nothing was sent.",
-                            [f"would {r.method} {r.path}" for r in plan.requests])
+        return ActionResult("dry_run", "Nothing was sent.",
+                            [f"would send: {r.description or r.path} ({r.method})" for r in plan.requests])
 
     result = ActionResult("ok")
     done = 0
