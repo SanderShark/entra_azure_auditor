@@ -9,6 +9,8 @@
 *.cer
 token_cache*.json
 .entra_auditor/
+# your own tenant list (tenant and app ids); tenants.example.json is the template
+tenants.json
 
 # --- Audit output: describes your tenant's weaknesses ------------------------
 reports/

@@ -196,7 +196,8 @@ python -m entra_auditor gui
 It signs in as you (device code or browser), never with an app secret, so the app registration needs
 **delegated** permissions only (the toolkit table above); application permissions are used solely by the
 unattended audit (`AUDITOR_AUTH_MODE=app`). Tenants come from
-`~/.entra_auditor/tenants.json`, or from `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` in `.env` when that file is missing:
+`~/.entra_auditor/tenants.json` (copy `tenants.example.json` there and fill in your ids), or from
+`AZURE_TENANT_ID` / `AZURE_CLIENT_ID` in `.env` when that file is missing:
 
 ```json
 {"tenants": [

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "entra-auditor"
 dynamic = ["version", "dependencies"]
-description = "Read-only security auditor for Microsoft Entra ID: inactive and privileged accounts, MFA, Conditional Access, stale apps."
+description = "Microsoft Entra ID tools: a read-only security audit, an identity toolkit and desktop app with PIM just-in-time elevation, and an offline Entra Connect sync-rule validator."
 readme = "README.md"
 requires-python = ">=3.10"
 # Add a `license` entry (and a LICENSE file) once you have chosen one.

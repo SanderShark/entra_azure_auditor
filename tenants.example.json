@@ -1,0 +1,22 @@
+{
+  "tenants": [
+    {
+      "name": "Contoso",
+      "tenant_id": "00000000-0000-0000-0000-000000000000",
+      "client_id": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "name": "Contoso (large: start with synced users, no external ones)",
+      "tenant_id": "contoso.onmicrosoft.com",
+      "client_id": "00000000-0000-0000-0000-000000000000",
+      "user_scope": "synced",
+      "hide_external": true
+    },
+    {
+      "name": "Fabrikam (US Government)",
+      "tenant_id": "fabrikam.onmicrosoft.us",
+      "client_id": "00000000-0000-0000-0000-000000000000",
+      "authority_host": "https://login.microsoftonline.us"
+    }
+  ]
+}
