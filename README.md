@@ -220,6 +220,10 @@ registration needs **Allow public client flows** for device code, and the `http:
 So far:
 - **Users:** whole directory loaded once and filtered as you type; General, Groups, Sign-in methods,
   Certificate IDs and Roles tabs; enable/disable.
+- **On-premises** (a tab on each user): the hybrid half of the record, as Entra holds it: where the object
+  sits in AD (`corp.contoso.com/CORP/Staff`), logon name, distinguished name, SID, source anchor, last
+  synchronisation, extension attributes 1-15 and synchronisation errors. It is the synced copy, not a live
+  read of a domain controller.
 - **New user...** (toolbar, Users page): create a user, modelled on the selected user if there is one:
   department, title, company, office and usage location, the manager, direct licences that still have a free
   unit, and group memberships Graph can change. The initial password is generated, never shown in previews
@@ -245,8 +249,8 @@ So far:
   request: **BitLocker recovery keys** and the **Windows LAPS** local-administrator password. They are read
   only after a confirmation, shown once, and never saved or logged (the local action log and Entra's audit
   log record that you read them).
-- **Administrative units:** units on the left, members in the middle, settings and scoped roles on the right
-  (like OUs in ADUC, but AUs don't nest); add/remove users, groups and devices, edit name, description and
+- **Administrative units:** a tree of units on the left (each expands to Users, Groups and Devices with
+  counts), members in the middle, settings and scoped roles on the right (like OUs in ADUC, but AUs don't nest); add/remove users, groups and devices, edit name, description and
   dynamic membership.
 - **Roles / PIM:** your directory roles and PIM for Groups assignments, with activate/deactivate. When a
   change is denied, the app also offers PIM groups whose membership carries the needed role.

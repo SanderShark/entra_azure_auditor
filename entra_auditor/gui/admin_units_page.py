@@ -1,8 +1,10 @@
 """Administrative units page, laid out like OUs in Active Directory Users and Computers:
-units on the left, the selected unit's members in the middle, its settings and scoped roles on the right.
+a tree of units on the left, the selected unit's members in the middle, its settings and scoped roles on
+the right.
 
-AUs don't nest, so the left side is a flat list. Members are users, groups and devices; double-click a
-user to open it on the Users page. Adding/removing members and editing settings go through the change
+AUs don't nest, so the tree has two levels: each unit, and under it Users, Groups and Devices (with counts
+once the unit has been opened). Selecting the unit shows everything in it; selecting one of the three shows
+only that kind. Double-click a user to open it on the Users page, a group to open it on the Groups page. Adding/removing members and editing settings go through the change
 flow (preview, confirm, PIM elevation to Privileged Role Administrator, result).
 
 NOT VERIFIED AGAINST A LIVE TENANT. See CLAUDE.md.
@@ -23,8 +25,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -55,6 +57,9 @@ from .pickers import PickerDialog
 
 UNREADABLE = "(could not be read)"
 KIND_LABEL = {"user": "User", "group": "Group", "device": "Device", "object": "Object"}
+TREE_KINDS = (("user", "Users"), ("group", "Groups"), ("device", "Devices"))     # the nodes under each unit
+UNIT_ROLE = Qt.ItemDataRole.UserRole
+KIND_ROLE = Qt.ItemDataRole.UserRole + 1        # None on a unit's own node, else "user" | "group" | "device"
 
 
 def load_unit_contents(graph: Any, unit_id: str) -> tuple[Optional[list[AuMember]], Optional[str], AuRoles]:
@@ -153,11 +158,13 @@ class AdminUnitsPage(QWidget):
         self.unit_filter = QLineEdit()
         self.unit_filter.setPlaceholderText("Filter units...")
         self.unit_filter.setClearButtonEnabled(True)
-        self.unit_list = QListWidget()
+        self.unit_tree = QTreeWidget()
+        self.unit_tree.setHeaderHidden(True)
+        self.kind_filter: Optional[str] = None      # set while one of a unit's Users/Groups/Devices nodes is selected
         self.units_status = QLabel()
         self.units_status.setWordWrap(True)
         left_layout.addWidget(self.unit_filter)
-        left_layout.addWidget(self.unit_list)
+        left_layout.addWidget(self.unit_tree)
         left_layout.addWidget(self.units_status)
 
         # -- middle: members ------------------------------------------------------------------------ #
@@ -231,7 +238,7 @@ class AdminUnitsPage(QWidget):
 
         self.unit_filter.textChanged.connect(self._filter_units)
         self.member_filter.textChanged.connect(self._filter_members)
-        self.unit_list.currentItemChanged.connect(self._unit_changed)
+        self.unit_tree.currentItemChanged.connect(self._unit_changed)
         self.member_table.itemSelectionChanged.connect(self._update_buttons)
         self.member_table.cellDoubleClicked.connect(self._open_member)
         self.add_users_button.clicked.connect(self.add_users)
@@ -258,23 +265,30 @@ class AdminUnitsPage(QWidget):
     def _units_loaded(self, result: tuple[list[AdminUnit], list[str]]) -> None:
         units, warnings = result
         self.loading, self.loaded = False, True
-        selected = self.unit.id if self.unit else None
+        selected, kind = (self.unit.id if self.unit else None), self.kind_filter
         self.units = units
-        self.unit_list.blockSignals(True)
-        self.unit_list.clear()
-        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        self.unit_tree.blockSignals(True)
+        self.unit_tree.clear()
+        folder = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
         for unit in units:
-            text = unit.label + (f"  [{', '.join(unit.badges)}]" if unit.badges else "")
-            item = QListWidgetItem(icon, text)
-            item.setData(Qt.ItemDataRole.UserRole, unit)
-            item.setToolTip(unit.description or unit.label)
-            self.unit_list.addItem(item)
-        self.unit_list.blockSignals(False)
+            item = QTreeWidgetItem([unit.label + (f"  [{', '.join(unit.badges)}]" if unit.badges else "")])
+            item.setIcon(0, folder)
+            item.setData(0, UNIT_ROLE, unit)
+            item.setData(0, KIND_ROLE, None)
+            item.setToolTip(0, unit.description or unit.label)
+            for member_kind, label in TREE_KINDS:
+                child = QTreeWidgetItem([label])
+                child.setData(0, UNIT_ROLE, unit)
+                child.setData(0, KIND_ROLE, member_kind)
+                item.addChild(child)
+            self.unit_tree.addTopLevelItem(item)
+        self.unit_tree.blockSignals(False)
         self._filter_units(self.unit_filter.text())
         self.units_status.setText(f"{len(units):,} units" + ("".join(f"\n! {w}" for w in warnings)))
         if not units:
             self.units_status.setText("This tenant has no administrative units.")
-        if selected and self.select_unit(selected):
+        self.unit, self.kind_filter = None, None       # the tree was rebuilt: nothing is shown until selected again
+        if selected and self.select_unit(selected, kind):
             return
         self._show_unit(None)
 
@@ -282,24 +296,56 @@ class AdminUnitsPage(QWidget):
         self.loading = False
         self.units_status.setText(f"Couldn't load administrative units: {exc}")
 
+    def _unit_items(self) -> list[QTreeWidgetItem]:
+        return [self.unit_tree.topLevelItem(row) for row in range(self.unit_tree.topLevelItemCount())]
+
     def _filter_units(self, text: str) -> None:
         terms = text.casefold().split()
-        for row in range(self.unit_list.count()):
-            item = self.unit_list.item(row)
-            unit: AdminUnit = item.data(Qt.ItemDataRole.UserRole)
+        for item in self._unit_items():
+            unit: AdminUnit = item.data(0, UNIT_ROLE)
             hay = f"{unit.label} {unit.description or ''} {' '.join(unit.badges)}".casefold()
             item.setHidden(not all(t in hay for t in terms))
 
-    def select_unit(self, unit_id: str) -> bool:
-        for row in range(self.unit_list.count()):
-            item = self.unit_list.item(row)
-            if item.data(Qt.ItemDataRole.UserRole).id == unit_id:
-                self.unit_list.setCurrentItem(item)
+    def unit_texts(self) -> list[str]:
+        return [item.text(0) for item in self._unit_items() if not item.isHidden()]
+
+    def node_texts(self, unit_id: str) -> list[str]:
+        """The Users / Groups / Devices nodes under a unit, as shown."""
+        item = next(i for i in self._unit_items() if i.data(0, UNIT_ROLE).id == unit_id)
+        return [item.child(row).text(0) for row in range(item.childCount())]
+
+    def select_unit(self, unit_id: str, kind: Optional[str] = None) -> bool:
+        """Select a unit, or (with ``kind``) its Users, Groups or Devices node."""
+        for item in self._unit_items():
+            if item.data(0, UNIT_ROLE).id == unit_id:
+                target = item
+                if kind is not None:
+                    item.setExpanded(True)
+                    target = next((item.child(row) for row in range(item.childCount())
+                                   if item.child(row).data(0, KIND_ROLE) == kind), item)
+                self.unit_tree.setCurrentItem(target)
                 return True
         return False
 
-    def _unit_changed(self, current: Optional[QListWidgetItem], _previous: Any) -> None:
-        self._show_unit(current.data(Qt.ItemDataRole.UserRole) if current else None)
+    def _unit_changed(self, current: Optional[QTreeWidgetItem], _previous: Any) -> None:
+        unit = current.data(0, UNIT_ROLE) if current else None
+        self.kind_filter = current.data(0, KIND_ROLE) if current else None
+        if unit is not None and self.unit is not None and unit.id == self.unit.id:
+            self._filter_members(self.member_filter.text())     # same unit, another node: nothing to reload
+            self._update_buttons()
+            return
+        self._show_unit(unit)
+
+    def _update_nodes(self) -> None:
+        """Put the counts on the open unit's Users / Groups / Devices nodes."""
+        if self.unit is None:
+            return
+        for item in self._unit_items():
+            if item.data(0, UNIT_ROLE).id != self.unit.id:
+                continue
+            for row, (kind, label) in enumerate(TREE_KINDS):
+                count = "?" if self.members is None else sum(1 for m in self.members if m.kind == kind)
+                item.child(row).setText(0, f"{label} ({count})")
 
     def _show_unit(self, unit: Optional[AdminUnit]) -> None:
         self._generation += 1
@@ -342,6 +388,7 @@ class AdminUnitsPage(QWidget):
             self.member_status.setText(f"Members couldn't be read: {error}.{hint}")
         else:
             self._fill_members()
+        self._update_nodes()
         self._fill_roles()
         self._update_buttons()
 
@@ -370,14 +417,15 @@ class AdminUnitsPage(QWidget):
         for row in range(self.member_table.rowCount()):
             member: AuMember = self.member_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
             hay = f"{member.kind} {member.name or ''} {member.detail or ''} {member.id}".casefold()
-            hidden = not all(t in hay for t in terms)
+            hidden = not all(t in hay for t in terms) or (self.kind_filter is not None and member.kind != self.kind_filter)
             self.member_table.setRowHidden(row, hidden)
             shown += not hidden
         if self.members is not None:
             total = len(self.members)
             counts = {k: sum(1 for m in self.members if m.kind == k) for k in ("user", "group", "device")}
             summary = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in counts.items() if n) or "no members"
-            self.member_status.setText((f"{shown} of {total} shown - " if shown != total else "") + summary)
+            only = f"{dict(TREE_KINDS)[self.kind_filter]} only: " if self.kind_filter else ""
+            self.member_status.setText(only + (f"{shown} of {total} shown - " if shown != total else "") + summary)
 
     def _fill_roles(self) -> None:
         roles = self.roles
@@ -545,3 +593,5 @@ class AdminUnitsPage(QWidget):
         member: AuMember = self.member_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         if member.kind == "user":
             self.window.show_user(member.id)
+        elif member.kind == "group":
+            self.window.show_group(member.id)

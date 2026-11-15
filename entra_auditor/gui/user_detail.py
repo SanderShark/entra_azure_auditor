@@ -1,5 +1,5 @@
-"""Property tabs for the selected user: General, Groups, Licences, Sign-in methods, Certificate IDs, Roles,
-Who can manage.
+"""Property tabs for the selected user: General, On-premises, Groups, Licences, Sign-in methods,
+Certificate IDs, Roles, Who can manage.
 
 One profile load feeds every tab (no extra requests per tab). A part of the profile that couldn't be read
 is shown as "could not be read", never as an empty list (unknown is not empty).
@@ -107,6 +107,78 @@ class GeneralTab(QWidget):
 
 
 UNREADABLE = "(could not be read)"
+
+ON_PREM_FIELDS: tuple[tuple[str, Callable[[Any], str]], ...] = (
+    ("Location", lambda r: r.location or "-"),
+    ("Logon name", lambda r: r.logon_name or "-"),
+    ("On-premises UPN", lambda r: r.upn or "-"),
+    ("Domain", lambda r: r.domain or "-"),
+    ("Distinguished name", lambda r: r.distinguished_name or "-"),
+    ("Security identifier", lambda r: r.sid or "-"),
+    ("Source anchor", lambda r: r.immutable_id or "-"),
+    ("Last synchronised", lambda r: f"{r.last_sync:%Y-%m-%d %H:%M} UTC" if r.last_sync else "-"),
+    ("Extension attributes", lambda r: "\n".join(f"{k} = {v}" for k, v in r.extension_attributes.items()) or "none set"),
+    ("Synchronisation errors", lambda r: "\n".join(r.provisioning_errors) or "none"),
+)
+
+
+ON_PREM_MULTILINE = ("Extension attributes", "Synchronisation errors")
+
+
+def _value_line() -> QLineEdit:
+    """A one-line value that can be longer than the pane (a distinguished name has no spaces to wrap at):
+    read-only, selectable, scrollable with the cursor, and shown in full as its tooltip."""
+    line = QLineEdit()
+    line.setReadOnly(True)
+    line.setFrame(False)
+    line.setStyleSheet("background: transparent;")
+    return line
+
+
+class OnPremTab(QWidget):
+    """What Entra holds about the user's on-premises AD object: the hybrid half of the record."""
+
+    NOTE = ("This is the copy of the on-premises object that the sync keeps in Entra ID, not a live read of Active "
+            "Directory: attributes that aren't synchronised don't appear here.")
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        form = QFormLayout(inner)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.status = _value_label()
+        form.addRow("Status:", self.status)
+        self.values: dict[str, Any] = {}
+        for name, _getter in ON_PREM_FIELDS:
+            self.values[name] = _value_label() if name in ON_PREM_MULTILINE else _value_line()
+            form.addRow(f"{name}:", self.values[name])
+        note = _value_label()
+        note.setText(self.NOTE)
+        note.setStyleSheet("color: #666;")
+        form.addRow(note)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+
+    def show_record(self, record: Any) -> None:
+        if record is None:
+            self.status.setText(UNREADABLE)
+        elif record.synced:
+            self.status.setText("Synchronised from on-premises Active Directory: change AD-mastered attributes there.")
+        elif record.has_record:
+            self.status.setText("Not synchronised now, but an on-premises record remains (it was synchronised before).")
+        else:
+            self.status.setText("Cloud-only account: there is no on-premises record.")
+        for name, getter in ON_PREM_FIELDS:
+            text = UNREADABLE if record is None else getter(record) if record.has_record else "-"
+            widget = self.values[name]
+            widget.setText(text)
+            if isinstance(widget, QLineEdit):
+                widget.setCursorPosition(0)         # show the start of a long value, not its end
+                widget.setToolTip(text)
 
 
 class ListTab(QWidget):
@@ -428,6 +500,8 @@ class UserDetail(QWidget):
         self.tabs = QTabWidget()
         self.general = GeneralTab()
         self.tabs.addTab(self.general, "General")
+        self.on_prem_tab = OnPremTab()
+        self.tabs.addTab(self.on_prem_tab, "On-premises")
         self.groups_tab = ListTab(("Member of", "Owns"))
         for widget in self.groups_tab.lists.values():
             widget.setToolTip("Double-click a group to open it on the Groups page.")
@@ -494,6 +568,7 @@ class UserDetail(QWidget):
         self._pending = False
         self.profile = profile
         self.general.show_profile(profile)
+        self.on_prem_tab.show_record(profile.on_prem)
         for title, refs, empty in (("Member of", profile.groups, "no groups"), ("Owns", profile.owned, "nothing")):
             ordered = None if refs is None else sorted(refs, key=lambda r: r.label.casefold())
             self.groups_tab.show_items(title, None if ordered is None else [r.label for r in ordered], empty, ordered)

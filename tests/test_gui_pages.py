@@ -71,8 +71,8 @@ def test_units_load_when_the_page_is_first_opened(qtbot, window):
     win.show_section("Administrative units")
     page = win.admin_units_page
     qtbot.waitUntil(lambda: page.loaded)
-    texts = [page.unit_list.item(i).text() for i in range(page.unit_list.count())]
-    assert texts == ["Contractors  [dynamic]", "Executives  [restricted]", "Seattle"]
+    assert page.unit_texts() == ["Contractors  [dynamic]", "Executives  [restricted]", "Seattle"]
+    assert page.node_texts("au-sea") == ["Users", "Groups", "Devices"]            # no counts until it is opened
     assert win.refresh_action.text() == "Reload" and not win.toggle_action.isVisible()
 
 
@@ -324,3 +324,58 @@ def test_the_preview_shows_every_change_and_the_whole_body(qtbot, runner):
     assert dialog.requests.rowHeight(0) >= dialog.requests.sizeHintForRow(0)   # ...and the row shows all of it
     details = [w for w in dialog.findChildren(type(dialog.warnings[0])) if "membershipRuleProcessingState" in w.text()]
     assert details and details[0].isVisible() and details[0].height() >= details[0].heightForWidth(details[0].width())
+
+
+# ---- the unit tree ------------------------------------------------------------------------------------
+
+def test_a_unit_expands_to_users_groups_and_devices_with_counts(qtbot, window):
+    tenant = au_tenant()
+    page = open_units(qtbot, window(tenant))
+    assert page.node_texts("au-sea") == ["Users (1)", "Groups (1)", "Devices (1)"]
+    assert page.node_texts("au-vip") == ["Users", "Groups", "Devices"]            # other units aren't loaded for this
+    calls = len(tenant.calls)
+    assert page.select_unit("au-sea", "group")
+    assert page.member_names() == ["Finance Share"] and page.member_status.text().startswith("Groups only: 1 of 3 shown")
+    assert page.select_unit("au-sea", "device") and page.member_names() == ["SEA-LT-001"]
+    assert page.select_unit("au-sea", "user") and page.member_names() == ["Alice Ng"]
+    assert page.select_unit("au-sea") and page.member_names() == ["Alice Ng", "Finance Share", "SEA-LT-001"]
+    assert len(tenant.calls) == calls                                             # moving between nodes reads nothing
+    assert page.add_users_button.isEnabled() and page.unit.id == "au-sea"
+
+
+def test_a_node_filter_combines_with_the_text_filter_and_follows_to_another_unit(qtbot, window):
+    tenant = au_tenant()
+    tenant.au_members["au-vip"] = {"u-bob", "dev-2"}
+    page = open_units(qtbot, window(tenant))
+    page.select_unit("au-sea", "user")
+    page.member_filter.setText("finance")
+    assert page.member_names() == []                                              # the group matches, but only users show
+    page.member_filter.clear()
+    assert page.select_unit("au-vip", "device")
+    qtbot.waitUntil(lambda: not page.loading_contents and page.unit.id == "au-vip")
+    assert page.member_names() == ["Pixel 8"] and page.node_texts("au-vip") == ["Users (1)", "Groups (0)", "Devices (1)"]
+
+
+def test_the_node_stays_selected_and_its_count_updates_after_a_change(qtbot, window):
+    tenant = au_tenant()
+    tenant.active_roles["r"] = "Privileged Role Administrator"
+    win = window(tenant)
+    page = open_units(qtbot, win)
+    page.select_unit("au-sea", "user")
+    page.add_users_button.click()
+    picker = wait_for(qtbot, page, PickerDialog)
+    picker.select_texts("Bob Stone")
+    picker.ok_button.click()
+    wait_for(qtbot, win.change, PlanDialog).apply_button.click()
+    wait_for(qtbot, win.change, ResultDialog).accept()
+    qtbot.waitUntil(lambda: page.node_texts("au-sea")[0] == "Users (2)")
+    assert page.kind_filter == "user" and page.member_names() == ["Alice Ng", "Bob Stone"]
+
+
+def test_double_clicking_a_group_member_opens_the_groups_page(qtbot, window):
+    win = window(au_tenant())
+    page = open_units(qtbot, win)
+    page._open_member(1, 1)
+    groups = win.groups_page
+    qtbot.waitUntil(lambda: groups.group is not None and groups.group.id == "g-fin")
+    assert win.current_section == "Groups"

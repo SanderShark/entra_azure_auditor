@@ -20,7 +20,7 @@ from ..graph.client import (
     GraphRetryExhaustedError,
 )
 from ..models import GROUP_KIND_LABELS, classify_group
-from .models import DirRef, GroupSummary, UserProfile
+from .models import DirRef, GroupSummary, OnPremRecord, UserProfile
 from .odata import literal, segment
 
 log = logging.getLogger(__name__)
@@ -33,6 +33,28 @@ CORE_SELECT = [
     "onPremisesSyncEnabled", "onPremisesSamAccountName", "externalUserState", "assignedLicenses",
     "proxyAddresses", "otherMails",
 ]
+
+# What Entra holds about the on-premises AD object (user resource, v1.0; each is returned only on $select).
+ON_PREM_SELECT = [
+    "onPremisesSyncEnabled", "onPremisesDomainName", "onPremisesSamAccountName", "onPremisesUserPrincipalName",
+    "onPremisesDistinguishedName", "onPremisesSecurityIdentifier", "onPremisesImmutableId",
+    "onPremisesLastSyncDateTime", "onPremisesExtensionAttributes", "onPremisesProvisioningErrors",
+]
+
+
+def on_prem_record(raw: dict[str, Any]) -> OnPremRecord:
+    extensions = raw.get("onPremisesExtensionAttributes") or {}
+    ordered = sorted(((k, v) for k, v in extensions.items() if v not in (None, "")),
+                     key=lambda kv: int("".join(c for c in kv[0] if c.isdigit()) or 0))
+    errors = [" / ".join(str(e.get(k)) for k in ("category", "propertyCausingError", "value") if e.get(k))
+              for e in raw.get("onPremisesProvisioningErrors") or []]
+    return OnPremRecord(
+        synced=bool(raw.get("onPremisesSyncEnabled")), domain=raw.get("onPremisesDomainName"),
+        sam_account=raw.get("onPremisesSamAccountName"), upn=raw.get("onPremisesUserPrincipalName"),
+        distinguished_name=raw.get("onPremisesDistinguishedName"), sid=raw.get("onPremisesSecurityIdentifier"),
+        immutable_id=raw.get("onPremisesImmutableId"), last_sync=_to_dt(raw.get("onPremisesLastSyncDateTime")),
+        extension_attributes=dict(ordered), provisioning_errors=errors)
+
 
 AUTH_METHOD_NAMES = {
     "passwordAuthenticationMethod": "Password",
@@ -124,6 +146,9 @@ def load_user_profile(graph: GraphClient, user_id: str) -> UserProfile:
     roles_eligible = _soft("eligible roles (PIM)", lambda: role_names(
         "/roleManagement/directory/roleEligibilitySchedules"), None, warnings)
 
+    on_prem = _soft("on-premises record", lambda: on_prem_record(graph.get(base, select=ON_PREM_SELECT)),
+                    None, warnings)
+
     methods = _soft("authentication methods", lambda: sorted(
         {_method_name(m) for m in graph.get_all(f"{base}/authentication/methods")}), None, warnings)
 
@@ -144,7 +169,7 @@ def load_user_profile(graph: GraphClient, user_id: str) -> UserProfile:
         manager=manager, cert_user_ids=cert_ids, auth_methods=methods,
         groups=None if memberships is None else [_dirref(m) for m in memberships],
         owned=None if owned is None else [_dirref(o) for o in owned],
-        roles_active=roles_active, roles_eligible=roles_eligible, warnings=warnings,
+        roles_active=roles_active, roles_eligible=roles_eligible, on_prem=on_prem, warnings=warnings,
     )
 
 

@@ -764,3 +764,33 @@ def test_hiding_external_users_reloads_without_them_and_says_so(qtbot, window):
     qtbot.waitUntil(lambda: not win.loading and win.count_label.text() == "7 users (members only, external hidden)")
     win.hide_external_box.setChecked(False)
     qtbot.waitUntil(lambda: not win.loading and win.count_label.text() == "7 users (members only)")
+
+
+# ---- the on-premises tab ------------------------------------------------------------------------------
+
+def test_the_on_premises_tab_shows_the_hybrid_half_of_the_record(qtbot, window):
+    from tests.test_profile import hybrid_tenant
+    win = window(hybrid_tenant())
+    win.select_user("u-sync")
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    tab = win.detail.on_prem_tab
+    assert tab.status.text().startswith("Synchronised from on-premises Active Directory")
+    assert tab.values["Location"].text() == "corp.contoso.com/CORP/Staff"
+    assert tab.values["Logon name"].text() == "CORP\\ssam"
+    assert tab.values["Extension attributes"].text() == "extensionAttribute2 = B\nextensionAttribute14 = no0365sync"
+    assert "ProxyAddresses" in tab.values["Synchronisation errors"].text()
+    assert win.detail.tabs.tabText(1) == "On-premises"
+    win.select_user("u-alice")
+    qtbot.waitUntil(lambda: win.detail.profile is not None and win.detail.profile.id == "u-alice")
+    assert tab.status.text() == "Cloud-only account: there is no on-premises record."
+    assert tab.values["Location"].text() == "-" and tab.values["Extension attributes"].text() == "-"
+
+
+def test_an_unreadable_on_premises_record_says_so(qtbot, window):
+    from entra_auditor.toolkit.models import UserProfile
+    win = window()
+    win.detail._loader = lambda graph, user_id: UserProfile(id=user_id, display_name="X", on_prem=None)
+    win.select_user("u-alice")
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    assert win.detail.on_prem_tab.status.text() == "(could not be read)"
+    assert win.detail.on_prem_tab.values["Location"].text() == "(could not be read)"

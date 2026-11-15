@@ -16,7 +16,7 @@ turns into a pile of patches.
 3. **Set up and run the checks** (the environment has no `python`; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 998 passed (the default addopts hide the summary)
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 1006 passed (the default addopts hide the summary)
    .venv/bin/ruff check .                                               # clean
    ```
 4. Then: section 4 (what to build next) and section 3 (questions for the owner).
@@ -31,13 +31,13 @@ preview (exact requests; Cancel is the default) -> confirm -> on "forbidden" a P
 |---|---|---|
 | Sign-in, **Switch tenant...** | `gui/signin.py`, `gui/app.py` (`session_loop`) | one token cache per tenant; user sign-in only |
 | **Users** list | `gui/main_window.py`, `gui/user_model.py` | loaded once; instant filter/sort at 300k rows; load-scope box (all / members / guests / synced) and "Hide external (#EXT#)" |
-| User tabs | `gui/user_detail.py` | General, Groups (double-click opens the group), **Licences** (lazy; assign/remove), Sign-in methods, Certificate IDs, Roles, **Who can manage** (lazy, read-only) |
+| User tabs | `gui/user_detail.py` | General, **On-premises** (the synced copy of the AD record: OU path, logon name, DN, SID, source anchor, last sync, extensionAttribute1-15, sync errors), Groups (double-click opens the group), **Licences** (lazy; assign/remove), Sign-in methods, Certificate IDs, Roles, **Who can manage** (lazy, read-only) |
 | **New user...** | `gui/onboarding.py`, `toolkit/onboarding.py` | modelled on the selected user; password shown once |
 | **Offboard...** | `gui/leaver.py`, `toolkit/leaver.py` | one multi-step plan; reports each step |
 | Enable/disable | toolbar | |
 | **Groups** | `gui/groups_page.py`, `toolkit/groups.py` | members, owners, nested security groups, memberOf; Exchange-managed hidden by default |
 | **Devices** | `gui/devices_page.py`, `toolkit/devices.py` | BitLocker keys and LAPS passwords on request, shown once |
-| **Administrative units** | `gui/admin_units_page.py`, `toolkit/admin_units.py` | members (users/groups/devices), settings, scoped roles |
+| **Administrative units** | `gui/admin_units_page.py`, `toolkit/admin_units.py` | a two-level tree: unit, then Users / Groups / Devices nodes (counts once opened; a node filters the member table without reloading); settings, scoped roles |
 | **Roles / PIM** | `gui/roles_page.py`, `toolkit/pim.py`, `toolkit/group_pim.py` | your roles and PIM-for-Groups; activate/deactivate |
 | Audit, Action log | - | still greyed out in the navigation |
 
@@ -60,6 +60,17 @@ preview (exact requests; Cancel is the default) -> confirm -> on "forbidden" a P
   Default is still "all users"; `tenants.json` can set `user_scope` and `hide_external`. Hiding `#EXT#` is done while
   loading (Graph has no server-side `contains` on the UPN), so those pages are still downloaded. A server-side
   variant (`not endswith(userPrincipalName, '#EXT#@<initial domain>')` as an advanced query) is untested.
+- **On-premises AD over LDAP** (owner's idea, 2026-11-15: "ADUC-style LDAP", the entire record for objects that
+  exist on both sides; for domain admins and power users). NOT built: the On-premises tab shows only what Entra
+  holds. A live AD connection is a real step up in scope and risk, so decide first:
+  1. read-only (show the full AD record, group memberships, OU tree) or also writes (unlock, reset, move, edit)?
+  2. how to authenticate: the signed-in Windows user (Kerberos/SSPI; Windows-only, no password handled), or a
+     prompt for domain credentials (kept in memory only, like tokens)? LDAPS/Kerberos sealing only, never simple
+     bind in clear text.
+  3. dependency: `ldap3` (pure Python) as another optional extra, like `.[gui]`.
+  4. it can't be tested here beyond a fake directory; the owner would have to try it on a domain-joined machine.
+  Suggested first cut: read-only, optional extra, "Active Directory" section added to the On-premises tab (all
+  attributes, memberOf, lockout/password state, last logon), matched by the source anchor / objectGUID.
 - **Role assignment writes** (assign admin roles, tenant-wide or unit-scoped): still undecided. Options: stay
   read-only [recommended until PIM is tested live], PIM-eligible only, or eligible and permanent. Offboarding
   therefore lists admin roles but does not remove them.
@@ -81,6 +92,8 @@ Agreed order so far; items 1-5 of the EasyEntra list are done except the last:
    group"; expand a group principal to its members in "Who can manage"; custom roles there; use the restricted-unit
    knowledge in the elevation flow (don't offer a tenant-wide role for a target in a restricted unit); CLI commands
    for offboarding/onboarding/licences.
+   Sync tie-in idea: with a Connect export loaded, the On-premises tab could explain "why is this user synced /
+   what would filter it" using the user's own extension attributes and DN (`syncrules.verdict`).
 5. **Still greyed out:** Audit page, Action log page. Then packaging (PyInstaller or Briefcase) and code signing.
 6. **Ideas the owner liked earlier, not built:** undo from the action log (reverse plan from logged before/after
    values); PIM timer in the status bar; "no MFA registered" filter from the registration report; bulk changes from

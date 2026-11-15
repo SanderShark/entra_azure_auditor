@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -95,6 +96,43 @@ class DirRef(BaseModel):
         return f"{base} ({self.detail})" if self.detail else base
 
 
+class OnPremRecord(BaseModel):
+    """What Entra ID holds about a user's on-premises Active Directory object (it is copied there by the
+    sync; nothing here is read from a domain controller)."""
+    synced: bool = False                       # currently synchronised from on-premises AD
+    domain: str | None = None                  # DNS name of the AD domain
+    sam_account: str | None = None
+    upn: str | None = None                     # the on-premises userPrincipalName
+    distinguished_name: str | None = None
+    sid: str | None = None
+    immutable_id: str | None = None            # the source anchor that ties the two objects together
+    last_sync: datetime | None = None
+    extension_attributes: dict[str, str] = Field(default_factory=dict)     # extensionAttribute1..15 that are set
+    provisioning_errors: list[str] = Field(default_factory=list)
+
+    @property
+    def has_record(self) -> bool:
+        return bool(self.synced or self.distinguished_name or self.sam_account or self.immutable_id)
+
+    @property
+    def location(self) -> str | None:
+        """Where the object sits, the way ADUC shows it: 'contoso.com/CORP/Staff'."""
+        if not self.distinguished_name:
+            return None
+        parts = [p.strip() for p in re.split(r"(?<!\\),", self.distinguished_name)]
+        domain = ".".join(p.partition("=")[2] for p in parts if p.upper().startswith("DC="))
+        containers = [p.partition("=")[2] for p in parts[1:] if not p.upper().startswith("DC=")]
+        return "/".join([domain or (self.domain or "?"), *reversed(containers)])
+
+    @property
+    def logon_name(self) -> str | None:
+        """DOMAIN\\name style, as far as it is known."""
+        if not self.sam_account:
+            return None
+        netbios = (self.domain or "").split(".")[0].upper()
+        return f"{netbios}\\{self.sam_account}" if netbios else self.sam_account
+
+
 class UserProfile(BaseModel):
     id: str
     upn: str | None = None
@@ -129,6 +167,7 @@ class UserProfile(BaseModel):
     owned: list[DirRef] | None = None
     roles_active: list[str] | None = None
     roles_eligible: list[str] | None = None
+    on_prem: OnPremRecord | None = None        # None = could not be read
     warnings: list[str] = Field(default_factory=list)
 
     @property

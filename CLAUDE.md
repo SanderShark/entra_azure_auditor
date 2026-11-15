@@ -56,7 +56,7 @@ entra_auditor/
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, leaver (offboarding dialog), onboarding (new-user dialog), groups_page, devices_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~1000 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~1005 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -139,6 +139,8 @@ tests/                 ~1000 tests, no network; fakes.py, builders.py, conftest.
 - "Unknown is not no" in the sync tools too: an unknown operator or function gives UNKNOWN (three-valued logic;
   `True || unknown` is still True), a NULL flow passes the decision to the next rule, and the impact validator
   fails on anything it can't judge.
+- A wrapping QLabel can't break a value with no spaces (a distinguished name): it was clipped at the pane's
+  edge. One-line values that can be long go in a read-only, frameless QLineEdit (`user_detail._value_line`).
 - The property pane is narrow: a five-column table there hid its most important column behind a scrollbar
   (seen only in a screenshot). Use wrapped list entries in detail tabs.
 - Qt makes a dialog's first accept button the default on show: the change preview forced Cancel back as the
