@@ -43,6 +43,7 @@ from ..toolkit.models import UserSummary
 from ..toolkit.search import get_user
 from .admin_units_page import AdminUnitsPage
 from .change import ChangeController
+from .devices_page import DevicesPage
 from .groups_page import GroupsPage
 from .leaver import LeaverDialog
 from .onboarding import NewUserDialog
@@ -53,8 +54,8 @@ from .user_detail import UserDetail
 from .user_model import USER_ROLE, UserFilterProxy, UserTableModel
 
 FILTER_DELAY_MS = 150
-SECTIONS = ("Users", "Groups", "Administrative units", "Roles / PIM", "Audit", "Action log")
-READY = ("Users", "Groups", "Administrative units", "Roles / PIM")
+SECTIONS = ("Users", "Groups", "Devices", "Administrative units", "Roles / PIM", "Audit", "Action log")
+READY = ("Users", "Groups", "Devices", "Administrative units", "Roles / PIM")
 LATER = "Coming in a later milestone."
 
 
@@ -140,9 +141,11 @@ class MainWindow(QMainWindow):
 
         # -- pages ------------------------------------------------------------------- #
         self.groups_page = GroupsPage(self)
+        self.devices_page = DevicesPage(self)
         self.admin_units_page = AdminUnitsPage(self)
         self.roles_page = RolesPage(self)
         self.pages: dict[str, QWidget] = {"Users": self.users_page, "Groups": self.groups_page,
+                                          "Devices": self.devices_page,
                                           "Administrative units": self.admin_units_page,
                                           "Roles / PIM": self.roles_page}
         self.stack = QStackedWidget()

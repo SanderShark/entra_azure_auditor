@@ -47,12 +47,13 @@ entra_auditor/
                        groups (members/owners/memberOf of one group, for the Groups page),
                        licences (subscriptions, a user's licences and their source; plan in actions),
                        leaver (offboarding: gather facts, then ONE pure multi-step plan, `plan_leaver`),
-                       onboarding (create a user from a template user: `gather_template`, `plan_onboard`)
+                       onboarding (create a user from a template user: `gather_template`, `plan_onboard`),
+                       devices (BitLocker keys and LAPS passwords: read on demand, never logged)
   gui/                 PySide6 desktop app (`auditor gui`, optional extra `.[gui]`): tasks (thread pool ->
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
-                       pickers, leaver (offboarding dialog), onboarding (new-user dialog), groups_page, admin_units_page, roles_page, main_window (nav | page stack), app
+                       pickers, leaver (offboarding dialog), onboarding (new-user dialog), groups_page, devices_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~895 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~905 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -62,7 +63,9 @@ tests/                 ~895 tests, no network; fakes.py, builders.py, conftest.p
    `toolkit/flow.py ChangeFlow` (confirm -> execute -> PIM elevation -> retry). UI code never calls
    `graph.post/patch/delete` or `execute_plan` directly. `--dry-run` sends nothing.
 2. **Secrets.** A password is shown to the operator once and is never logged, saved or put in a plan's
-   loggable form (`PlannedRequest.secret_keys`, `audit_log._scrub`). Tokens stay in-process.
+   loggable form (`PlannedRequest.secret_keys`, `audit_log._scrub`). Tokens stay in-process. The same goes for
+   BitLocker recovery keys and LAPS passwords (`toolkit/devices.py`): read only on request, shown once in
+   `SecretDialog`, and the action log records the read, never the value.
 3. **Unknown is not empty.** In `TenantSnapshot`, `None` = could not be collected, `[]` = collected and
    empty. Counts that can't be confirmed stay `None` and are never flagged.
 4. **Checks are pure:** `(snapshot, now, cfg) -> list[Finding]`. No network, no `datetime.now()`.
@@ -100,7 +103,8 @@ tests/                 ~895 tests, no network; fakes.py, builders.py, conftest.p
 - `requires-python` is 3.10: no 3.12-only syntax (e.g. reusing the outer quote inside an f-string).
 - Qt: a signal connected to a plain Python callable runs it in the EMITTING thread. Worker results go through
   `gui/tasks.py TaskRunner` (a relay to a QObject on the UI thread); never update widgets from a worker.
-- New permissions (PIM for Groups, AdministrativeUnit.ReadWrite.All) are deliberately NOT added to
+- New permissions (PIM for Groups, AdministrativeUnit.ReadWrite.All, BitlockerKey.Read.All,
+  DeviceLocalCredential.Read.All) are deliberately NOT added to
   TOOLKIT_SCOPES: requesting an unconsented scope breaks sign-in for every command. Pages explain a 403 instead.
 - The change preview must show everything that will be sent: request bodies wrap, never elide (tested).
 - PIM roles were matched by name only, so eligibility scoped to one administrative unit was offered for targets
@@ -137,7 +141,8 @@ the Roles / PIM page and group candidates in the elevation flow), **administrati
 the AU plans in `actions.py`, the AU page; in particular whether `$filter=directoryScopeId eq '/administrativeUnits/..'`
 works on roleAssignments/roleEligibilitySchedules, which has a scopedRoleMembers fallback), **unit-scoped PIM
 roles in the elevation flow**, **licences** (`toolkit/licences.py`, `plan_change_licences`: the
-`licenseAssignmentStates` shape, `assignLicense`), the **offboarding workflow** (`toolkit/leaver.py`), **onboarding** (`toolkit/onboarding.py`: create user,
+`licenseAssignmentStates` shape, `assignLicense`), **device recovery secrets** (`toolkit/devices.py`: the
+`deviceId eq` filter on recoveryKeys, the "value" wrapper, LAPS base64 as UTF-16LE), the **offboarding workflow** (`toolkit/leaver.py`), **onboarding** (`toolkit/onboarding.py`: create user,
 `PUT /users/{id}/manager/$ref` (not re-checked in the docs this session), the replication retry), and the **"Who can manage" tab** (`toolkit/managers.py`: that role assignments
 can be listed with `$filter=roleDefinitionId eq ..&$expand=principal`, also on roleEligibilitySchedules, that
 `memberOf`/`ownedObjects` return `isAssignableToRole` and unit type; its rules come from Microsoft's docs

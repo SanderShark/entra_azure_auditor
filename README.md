@@ -238,6 +238,10 @@ So far:
   for); members, owners, properties and what the group belongs to; add/remove users, nested security groups
   and owners. Synced, dynamic and Exchange-managed groups explain why they are read-only. Double-click moves
   between users and groups.
+- **Devices:** every device loaded once and filtered as you type; properties; and recovery secrets on
+  request: **BitLocker recovery keys** and the **Windows LAPS** local-administrator password. They are read
+  only after a confirmation, shown once, and never saved or logged (the local action log and Entra's audit
+  log record that you read them).
 - **Administrative units:** units on the left, members in the middle, settings and scoped roles on the right
   (like OUs in ADUC, but AUs don't nest); add/remove users, groups and devices, edit name, description and
   dynamic membership.
@@ -246,7 +250,9 @@ So far:
 
 Optional permissions for the app registration (with admin consent): `PrivilegedEligibilitySchedule.Read.AzureADGroup`
 and `PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup` for PIM for Groups; `AdministrativeUnit.ReadWrite.All`
-to change administrative units (plus `Member.Read.Hidden` to list hidden-membership units). They aren't requested
+to change administrative units (plus `Member.Read.Hidden` to list hidden-membership units); `BitlockerKey.Read.All`
+and `DeviceLocalCredential.Read.All` for the recovery secrets on the Devices page (the user also needs a role
+such as Cloud Device Administrator). They aren't requested
 at sign-in, so a missing one only affects that page.
 
 ## Security notes

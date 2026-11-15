@@ -60,6 +60,11 @@ class FakeTenant:
         self.skus = {}
         self.licences = {}
         self.skus_denied = False
+        # device recovery secrets (opt-in): BitLocker {key id: {deviceId, volumeType, createdDateTime, key}},
+        # LAPS {deviceId: [{accountName, backupDateTime, passwordBase64}]}; keyed by the HARDWARE id
+        self.bitlocker = {}
+        self.laps = {}
+        self.secrets_denied = False
         self.managers = {}               # user id -> manager's user id
         self.replication_misses = 0      # how many requests about a just-created user answer 404 first
         self.created = []                # ids of users created through POST /users
@@ -214,6 +219,13 @@ class FakeTenant:
         if path == '/devices':
             yield from (dict(d) for d in self.devices.values())
             return
+        if path == '/informationProtection/bitlocker/recoveryKeys':
+            if self.secrets_denied:
+                raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
+            for key_id, key in self.bitlocker.items():
+                if key['deviceId'] in lits(flt):
+                    yield {'id': key_id, **{k: v for k, v in key.items() if k != 'key'}}     # never the key itself
+            return
         if path == '/subscribedSkus':
             if self.skus_denied:
                 raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
@@ -347,6 +359,25 @@ class FakeTenant:
             path = path.replace(BASE, '')
         if path == '/me':
             return {'id': 'u-me', 'userPrincipalName': 'me@contoso.com'}
+        m = re.match('/informationProtection/bitlocker/recoveryKeys/([^/]+)$', path)
+        if m:
+            if self.secrets_denied:
+                raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
+            if m.group(1) not in self.bitlocker:
+                raise GraphNotFoundError('404', status_code=404)
+            key = self.bitlocker[m.group(1)]
+            shown = {k: v for k, v in key.items() if k != 'key' or 'key' in (kw.get('select') or [])}
+            return {'value': {'id': m.group(1), **shown}}
+        m = re.match('/directory/deviceLocalCredentials/([^/]+)$', path)
+        if m:
+            if self.secrets_denied:
+                raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
+            if m.group(1) not in self.laps:
+                raise GraphNotFoundError('404', status_code=404)
+            body = {'id': m.group(1), 'deviceName': 'x'}
+            if 'credentials' in (kw.get('select') or []):
+                body['credentials'] = list(self.laps[m.group(1)])
+            return {'value': body}
         m = re.match('/users/([^/]+)$', path)
         if m:
             uid = m.group(1)

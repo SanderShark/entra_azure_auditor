@@ -183,3 +183,31 @@ def test_onboarding_creates_the_user_then_uses_the_returned_id(tmp_path):
         ("PUT", "/v1.0/users/new-guid/manager/$ref", {"@odata.id": "https://graph.microsoft.com/v1.0/users/mgr1"}),
         ("POST", "/v1.0/groups/g1/members/$ref", {"@odata.id": "https://graph.microsoft.com/v1.0/directoryObjects/new-guid"})]
     assert "Corr3ct" not in (tmp_path / "log.jsonl").read_text()
+
+
+def test_recovery_secrets_are_read_with_the_documented_requests(tmp_path):
+    from entra_auditor.toolkit.devices import list_bitlocker_keys, reveal_bitlocker_key, reveal_laps
+    from entra_auditor.toolkit.models import DeviceSummary
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, dict(request.url.params), bool(request.headers.get("User-Agent"))))
+        if request.url.path.endswith("/recoveryKeys"):
+            return httpx.Response(200, json={"value": [{"id": "k1", "createdDateTime": "2026-01-02T03:04:05Z",
+                                                        "volumeType": "1", "deviceId": "hw-1"}]})
+        if "/recoveryKeys/" in request.url.path:
+            return httpx.Response(200, json={"value": {"id": "k1", "key": "111111-222222"}})
+        return httpx.Response(200, json={"value": {"id": "hw-1", "credentials": [
+            {"accountName": "Administrator", "backupDateTime": "2026-01-02T03:04:05Z",
+             "passwordBase64": "UQBRAEAAZAA4AGYAOABnAFkA"}]}})                 # the docs' own example
+
+    client = client_for(handler)
+    dev = DeviceSummary(id="obj-1", device_id="hw-1", display_name="PC-1")
+    keys = list_bitlocker_keys(client, dev)
+    assert reveal_bitlocker_key(client, dev, keys[0], log_path=tmp_path / "log") == "111111-222222"
+    assert reveal_laps(client, dev, log_path=tmp_path / "log")[0].password == "QQ@d8f8gY"
+    assert [(m, p, q) for m, p, q, _ua in seen] == [
+        ("GET", "/v1.0/informationProtection/bitlocker/recoveryKeys", {"$filter": "deviceId eq 'hw-1'"}),
+        ("GET", "/v1.0/informationProtection/bitlocker/recoveryKeys/k1", {"$select": "key"}),
+        ("GET", "/v1.0/directory/deviceLocalCredentials/hw-1", {"$select": "credentials"})]
+    assert all(ua for *_rest, ua in seen)                                   # Graph requires a User-Agent here
