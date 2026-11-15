@@ -26,12 +26,15 @@ from typing import Any, Callable, ContextManager, Literal, Mapping, Optional, Pr
 
 from ..graph.client import GraphError
 from .actions import ActionPlan, ActionResult, execute_plan
+from .group_pim import GroupAccess, GroupPimService
 from .pim import PimError, PimRole, PimService
 
 RETRY_ATTEMPTS = 4         # tries after an elevation (the role takes a moment to take effect)
 RETRY_WAIT = 8.0           # seconds between those tries
 
 Level = Literal["info", "warning", "error", "success"]
+# What an elevation can activate: a directory role, or (PIM for Groups) membership of a group holding the role.
+Candidate = Union[PimRole, GroupAccess]
 
 
 # --------------------------------------------------------------------------- #
@@ -46,16 +49,17 @@ class NeedsConfirmation:
 
 @dataclass(frozen=True)
 class NeedsElevation:
-    """The change was denied; these eligible PIM roles could do it (best first). Pick one, or None."""
+    """The change was denied; these could do it (best first): eligible PIM roles, then eligible group
+    memberships whose group holds a suitable role. Pick one, or None."""
     plan: ActionPlan
-    candidate_roles: tuple[PimRole, ...]
+    candidate_roles: tuple[Candidate, ...]
     minutes: int
 
 
 @dataclass(frozen=True)
 class NeedsJustification:
-    """Activating `role` needs a justification (ticket or task)."""
-    role: PimRole
+    """Activating `role` (a PimRole or a GroupAccess) needs a justification (ticket or task)."""
+    role: Candidate
     minutes: int
 
 
@@ -118,9 +122,10 @@ class RecordingReporter:
 # PIM activation (also used on its own by `pim activate`)
 # --------------------------------------------------------------------------- #
 
-def activate_and_wait(sess: Any, pim: PimService, role: PimRole, reason: str, minutes: int,
+def activate_and_wait(sess: Any, pim: Any, role: Candidate, reason: str, minutes: int,
                       reporter: Optional[Reporter] = None) -> bool:
-    """Activate `role`, wait until it is effective and refresh the token. True when the role is usable."""
+    """Activate `role` (with a PimService) or a group membership (with a GroupPimService), wait until it is
+    effective and refresh the token. True when it is usable."""
     rep = reporter or NullReporter()
     try:
         result = pim.activate(role, reason=reason, minutes=minutes)
@@ -133,7 +138,7 @@ def activate_and_wait(sess: Any, pim: PimService, role: PimRole, reason: str, mi
         rep.notice(Notice("warning", f"{role.name} needs approval; the request was sent to the approvers."))
         return False
     with rep.busy(f"Waiting for {role.name} to become active..."):
-        active = pim.wait_until_active(role.role_id)
+        active = pim.wait_until_active(role) if isinstance(role, GroupAccess) else pim.wait_until_active(role.role_id)
     if not active:
         rep.notice(Notice("warning", f"{role.name} was requested but isn't showing as active yet; try again shortly."))
         return False
@@ -162,6 +167,7 @@ class ChangeFlow:
         extra_secrets: Optional[Mapping[str, str]] = None,
         reporter: Optional[Reporter] = None,
         pim: Optional[PimService] = None,
+        group_pim: Optional[GroupPimService] = None,
         sleep: Callable[[float], None] = time.sleep,
         retry_attempts: int = RETRY_ATTEMPTS,
         retry_wait: float = RETRY_WAIT,
@@ -173,6 +179,7 @@ class ChangeFlow:
         self._extra_secrets = dict(extra_secrets or {})
         self.reporter: Reporter = reporter or NullReporter()
         self._pim = pim
+        self._group_pim = group_pim
         self._sleep = sleep
         self._attempts = max(1, retry_attempts)
         self._wait = retry_wait
@@ -199,7 +206,7 @@ class ChangeFlow:
         self._denied = result
         return self._after_denied()
 
-    def choose_role(self, role: Optional[PimRole]) -> Step:
+    def choose_role(self, role: Optional[Candidate]) -> Step:
         step = self._expect(NeedsElevation)
         if role is None:
             return self._done(self._denied)
@@ -214,7 +221,8 @@ class ChangeFlow:
         why = reason.strip()
         if not why:
             raise ValueError("A justification is required.")
-        if not activate_and_wait(self.sess, self._pim_service(), step.role, why, self.minutes, self.reporter):
+        service = self._group_pim_service() if isinstance(step.role, GroupAccess) else self._pim_service()
+        if not activate_and_wait(self.sess, service, step.role, why, self.minutes, self.reporter):
             return self._done(self._denied)
         return self._retry()
 
@@ -247,6 +255,20 @@ class ChangeFlow:
             self._pim = PimService(self.sess.graph)
         return self._pim
 
+    def _group_pim_service(self) -> GroupPimService:
+        if self._group_pim is None:
+            self._group_pim = GroupPimService(self.sess.graph)
+        return self._group_pim
+
+    def _read_groups(self) -> tuple[list[GroupAccess], list[GroupAccess]]:
+        """Eligible and active PIM group memberships, or nothing if they can't be read (the permissions for
+        PIM for Groups are optional; without them the flow offers roles only, as before)."""
+        service = self._group_pim_service()
+        try:
+            return service.eligible(), service.active(with_roles=True)
+        except (PimError, GraphError):
+            return [], []
+
     def _say(self, level: Level, text: str) -> None:
         self.reporter.notice(Notice(level, text))
 
@@ -267,13 +289,16 @@ class ChangeFlow:
             return self._done(denied, activate_manually=tuple(plan.suggested_roles))
 
         wanted = {n.lower() for n in plan.suggested_roles}
-        already = [r for r in active if r.name.lower() in wanted]
+        groups_eligible, groups_active = self._read_groups()
+        already: list[Candidate] = [r for r in active if r.name.lower() in wanted]
+        already += [g for g in groups_active if g.access == "member" and wanted & {r.lower() for r in g.roles}]
         if already:
             self._say("info", f"You already have {already[0].name} active; refreshing your token and retrying.")
             self.sess.refresh()
             return self._retry()
 
-        matches = PimService.match(eligible, plan.suggested_roles, active)
+        matches: list[Candidate] = list(PimService.match(eligible, plan.suggested_roles, active))
+        matches += GroupPimService.granting(groups_eligible, plan.suggested_roles, groups_active)
         if not matches:
             self._say("info", "You aren't eligible for any role that can do this ("
                               + ", ".join(plan.suggested_roles) + ").")

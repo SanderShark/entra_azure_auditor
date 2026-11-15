@@ -129,8 +129,8 @@ class ElevationDialog(QDialog):
         self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
         layout.addWidget(_label("Entra says your current permissions aren't enough for this change. "
-                                f"You can activate one of these roles for {step.minutes} minutes with PIM "
-                                "and try again:"))
+                                f"You can activate one of these with PIM for {step.minutes} minutes and try "
+                                "again (a group membership gives you the roles the group holds):"))
         self.roles = QListWidget()
         for role in step.candidate_roles:
             item = QListWidgetItem(role.label)

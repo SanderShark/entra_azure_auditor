@@ -90,3 +90,22 @@ def test_pim_activation_goes_over_the_wire_as_documented():
     assert body["action"] == "selfActivate" and body["principalId"] == "me-id" and body["roleDefinitionId"] == "role-1"
     assert body["scheduleInfo"]["expiration"] == {"type": "afterDuration", "duration": "PT45M"}
     assert result.active_now
+
+
+def test_group_pim_activation_posts_to_the_documented_endpoint():
+    from datetime import datetime, timezone
+
+    from entra_auditor.toolkit.group_pim import GroupAccess, GroupPimService
+
+    responses = {"/v1.0/me": httpx.Response(200, json={"id": "me-1"}),
+                 "/v1.0/identityGovernance/privilegedAccess/group/assignmentScheduleRequests":
+                     httpx.Response(201, json={"id": "r1", "status": "Provisioned"})}
+    seen, handler = recorder(responses)
+    svc = GroupPimService(client_for(handler), clock=lambda: datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc))
+    result = svc.activate(GroupAccess("g1", "Helpdesk Admins", "member"), reason="INC-1", minutes=60)
+    method, path, body = seen[-1]
+    assert (method, path) == ("POST", "/v1.0/identityGovernance/privilegedAccess/group/assignmentScheduleRequests")
+    assert body == {"accessId": "member", "principalId": "me-1", "groupId": "g1", "action": "selfActivate",
+                    "justification": "INC-1", "scheduleInfo": {"startDateTime": "2026-01-02T03:04:00Z",
+                                                              "expiration": {"type": "afterDuration", "duration": "PT1H"}}}
+    assert result.active_now

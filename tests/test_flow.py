@@ -262,3 +262,70 @@ def test_the_flow_runs_with_no_reporter_at_all():
     step = flow.confirm(True)
     step = flow.choose_role(step.candidate_roles[0])
     assert flow.justify("x").result.status == "ok"
+
+
+# ---- PIM for Groups as an elevation path ---------------------------------------------------
+
+def group_tenant(**kw):
+    return FakeTenant(eligible=(), **kw).add_pim_group("g-uadm", "User Admins (PIM)", roles=["User Administrator"])
+
+
+def test_a_group_whose_membership_grants_the_role_is_offered():
+    env = make(group_tenant())
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert isinstance(step, F.NeedsElevation)
+    [candidate] = step.candidate_roles
+    assert candidate.group_id == "g-uadm" and "grants User Administrator" in candidate.label
+
+
+def test_roles_are_offered_before_groups():
+    tenant = FakeTenant().add_pim_group("g-uadm", "User Admins (PIM)", roles=["User Administrator"])
+    env = make(tenant)
+    env.flow.start()
+    names = [c.name for c in env.flow.confirm(True).candidate_roles]
+    assert names == ["User Administrator", "User Admins (PIM) (member)"]
+
+
+def test_activating_the_group_retries_and_succeeds():
+    env = make(group_tenant(propagation_delay=1))
+    env.flow.start()
+    step = env.flow.confirm(True)
+    env.flow.choose_role(step.candidate_roles[0])
+    step = env.flow.justify("INC-9")
+    assert step.result.status == "ok" and env.tenant.users["u-alice"]["jobTitle"] == "Principal"
+    body = [w for w in env.tenant.writes if w[1] == "group-pim"][0][2]
+    assert body["groupId"] == "g-uadm" and body["justification"] == "INC-9"
+    assert "User Admins (PIM) (member) is active for 60 minutes." in texts(env.reporter)
+
+
+def test_an_active_group_membership_is_used_after_a_refresh_without_asking():
+    tenant = group_tenant(propagation_delay=1)
+    tenant.group_active[("g-uadm", "member")] = "activated"
+    tenant._denied_after_activation = 1          # active, but not yet in the token
+    env = make(tenant)
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert isinstance(step, F.Done) and step.result.status == "ok" and env.sess.refreshes == 1
+
+
+def test_a_group_that_grants_an_unrelated_role_is_not_offered():
+    tenant = FakeTenant(eligible=()).add_pim_group("g-read", "Readers", roles=["Global Reader"])
+    env = make(tenant)
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert isinstance(step, F.Done) and step.result.status == "denied"
+
+
+def test_without_group_pim_permissions_the_flow_still_offers_roles():
+    class NoGroupPermission:
+        def eligible(self, **kw):
+            from entra_auditor.toolkit.pim import PimError
+            raise PimError("Your PIM group assignments couldn't be read.")
+
+        active = eligible
+
+    env = make(group_pim=NoGroupPermission())
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert [c.name for c in step.candidate_roles] == ["User Administrator"]

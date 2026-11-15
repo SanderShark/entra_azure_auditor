@@ -41,10 +41,25 @@ class FakeTenant:
         self.calls, self.writes, self.filters = ([], [], [])
         self.reset_polls = 0
         self.role_ids = {n: f"r-{n.lower().replace(' ', '-')}" for n in list(eligible) + ['Helpdesk Administrator', 'Global Administrator']}
+        # PIM for Groups (opt-in; see add_pim_group): eligible (group id, access), active {(gid, access): type},
+        # and the directory roles each group holds
+        self.group_eligible = []
+        self.group_active = {}
+        self.group_roles = {}
+
+    def add_pim_group(self, gid, name, roles=(), access='member', role_assignable=True):
+        """A group you are eligible for (membership by default) that holds `roles`."""
+        self.groups[gid] = G(gid, name, isAssignableToRole=role_assignable)
+        self.group_eligible.append((gid, access))
+        self.group_roles[gid] = list(roles)
+        return self
+
+    def _granted_by_groups(self):
+        return {r for (gid, access) in self.group_active if access == 'member' for r in self.group_roles.get(gid, [])}
 
     # ---- permission model: writes need an activated role (after any propagation delay) ----
     def _need_role(self):
-        if not self.active_roles:
+        if not self.active_roles and not (self._granted_by_groups() & self.ROLE_FOR_WRITES):
             raise GraphPermissionError('Authorization_RequestDenied: Insufficient privileges to complete the operation.', status_code=403, code='Authorization_RequestDenied')
         if self._denied_after_activation > 0:
             self._denied_after_activation -= 1
@@ -88,6 +103,22 @@ class FakeTenant:
         if re.match('/users/([^/]+)/authentication/methods$', path):
             yield {'@odata.type': '#microsoft.graph.passwordAuthenticationMethod', 'id': 'pw'}
             yield {'@odata.type': '#microsoft.graph.phoneAuthenticationMethod', 'id': 'ph'}
+            return
+        if path.startswith('/identityGovernance/privilegedAccess/group/eligibilityScheduleInstances/filterByCurrentUser'):
+            for gid, access in self.group_eligible:
+                yield {'groupId': gid, 'accessId': access, 'principalId': 'u-me', 'memberType': 'Direct',
+                       'startDateTime': '2026-01-01T00:00:00Z', 'endDateTime': '2027-01-01T00:00:00Z'}
+            return
+        if path.startswith('/identityGovernance/privilegedAccess/group/assignmentScheduleInstances/filterByCurrentUser'):
+            for (gid, access), kind in self.group_active.items():
+                yield {'groupId': gid, 'accessId': access, 'principalId': 'u-me', 'assignmentType': kind,
+                       'endDateTime': '2026-10-06T10:00:00Z'}
+            return
+        if path == '/roleManagement/directory/roleAssignments' and any(g in flt for g in self.group_roles):
+            for gid, names in self.group_roles.items():
+                if gid in flt:
+                    for n in names:
+                        yield {'roleDefinitionId': self.role_ids.get(n, n), 'roleDefinition': {'displayName': n}}
             return
         if path in ('/roleManagement/directory/roleAssignments', '/roleManagement/directory/roleEligibilitySchedules'):
             if 'u-admin' in flt:
@@ -144,6 +175,8 @@ class FakeTenant:
             path = path.replace(BASE, '')
         if path == '/roleManagement/directory/roleAssignmentScheduleRequests':
             return self._pim(json)
+        if path == '/identityGovernance/privilegedAccess/group/assignmentScheduleRequests':
+            return self._group_pim(json)
         self.writes.append((method, path, json))
         self._need_role()
         m = re.match('/groups/([^/]+)/(members|owners)/\\$ref$', path)
@@ -208,6 +241,22 @@ class FakeTenant:
         else:
             self.active_roles[body['roleDefinitionId']] = name
         return GraphResponse(201, {}, {'id': 'req1', 'status': 'Granted'})
+
+    def _group_pim(self, body):
+        self.writes.append(('POST', 'group-pim', body))
+        key = (body['groupId'], body['accessId'])
+        if body['action'] == 'selfDeactivate':
+            self.group_active.pop(key, None)
+            return GraphResponse(201, {}, {'id': 'greq2', 'status': 'Revoked'})
+        if key not in self.group_eligible:
+            raise GraphPermissionError('403 not eligible', status_code=403, code='Authorization_RequestDenied')
+        if not body.get('justification'):
+            raise GraphError('The following policy rules failed: ["JustificationRule"]', status_code=400,
+                             code='RoleAssignmentRequestPolicyValidationFailed')
+        self.group_active[key] = 'activated'
+        if self._granted_by_groups() & self.ROLE_FOR_WRITES:
+            self._denied_after_activation = self.propagation
+        return GraphResponse(201, {}, {'id': 'greq1', 'status': 'Provisioned'})
 
     def _users(self, flt, params, top):
         vals = lits(flt)

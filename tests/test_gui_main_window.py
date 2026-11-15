@@ -302,3 +302,18 @@ def test_unreadable_parts_say_so_instead_of_looking_empty(qtbot, window):
     assert d.certs_tab.texts("Certificate user IDs") == ["(could not be read)"]
     assert d.roles_tab.texts("Active roles") == ["(could not be read)"]
     assert "group memberships" in d.general.warnings.text()
+
+
+def test_the_elevation_dialog_offers_a_pim_group(qtbot, window):
+    tenant = FakeTenant(eligible=()).add_pim_group("g-uadm", "User Admins (PIM)", roles=["User Administrator"])
+    win = window(tenant)
+    ctrl, plan = start_disable(qtbot, win)
+    plan.apply_button.click()
+    elevation = wait_for(qtbot, ctrl, ElevationDialog)
+    assert "grants User Administrator" in elevation.roles.item(0).text()
+    elevation.activate_button.click()
+    justification = wait_for(qtbot, ctrl, JustificationDialog)
+    qtbot.keyClicks(justification.text, "INC-5")
+    justification.ok_button.click()
+    result = wait_for(qtbot, ctrl, ResultDialog)
+    assert result.status_label.text().startswith("OK:") and tenant.users["u-alice"]["accountEnabled"] is False

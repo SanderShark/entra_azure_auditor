@@ -477,3 +477,12 @@ def test_every_applied_change_is_logged_with_who_and_what(tk, isolated_env):
     assert entry["actor"] == "user:me@contoso.com" and entry["status"] == "ok" and entry["action"] == "user.update"
     assert "Alice Ng" in entry["target"]["name"]
     assert "Update user attributes" in tk.run(tcli.id_log)[1]
+
+
+def test_the_cli_can_elevate_through_a_pim_group(tk):
+    tenant = FakeTenant(eligible=()).add_pim_group("g-uadm", "User Admins (PIM)", roles=["User Administrator"])
+    tk.use(tenant)
+    code, out = tk.run(tcli.id_edit, "alice@contoso.com", set_=["title=Principal"], yes=True, elevate=True,
+                       reason="INC-3")
+    assert code == 0 and "OK:" in out and tenant.users["u-alice"]["jobTitle"] == "Principal"
+    assert [w for w in tenant.writes if w[1] == "group-pim"][0][2]["groupId"] == "g-uadm"
