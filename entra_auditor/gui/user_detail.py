@@ -1,5 +1,7 @@
-"""Property tabs for the selected user. This milestone has the General tab; Groups, Sign-in methods,
-Certificate IDs, Roles and Activity come next and can reuse the profile already loaded here.
+"""Property tabs for the selected user: General, Groups, Sign-in methods, Certificate IDs, Roles.
+
+One profile load feeds every tab (no extra requests per tab). A part of the profile that couldn't be read
+is shown as "could not be read", never as an empty list (unknown is not empty).
 
 The profile loads on a worker after the selection settles (a short delay, so arrowing through the list
 doesn't fire a burst of Graph requests). A response for a user who is no longer selected is dropped.
@@ -10,7 +12,16 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QFormLayout, QLabel, QScrollArea, QStackedWidget, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFormLayout,
+    QLabel,
+    QListWidget,
+    QScrollArea,
+    QStackedWidget,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..toolkit.models import UserProfile, UserSummary
 from ..toolkit.profile import load_user_profile
@@ -80,6 +91,38 @@ class GeneralTab(QWidget):
         self.warnings.setText("\n".join(f"! {w}" for w in profile.warnings))
 
 
+UNREADABLE = "(could not be read)"
+
+
+class ListTab(QWidget):
+    """A tab of titled lists. Each section is (title, items or None, text when empty)."""
+
+    def __init__(self, titles: tuple[str, ...], parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        self.lists: dict[str, QListWidget] = {}
+        for title in titles:
+            layout.addWidget(QLabel(f"<b>{title}</b>"))
+            widget = QListWidget()
+            widget.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+            self.lists[title] = widget
+            layout.addWidget(widget)
+
+    def show_items(self, title: str, items: Optional[list[str]], empty: str) -> None:
+        widget = self.lists[title]
+        widget.clear()
+        if items is None:
+            widget.addItem(UNREADABLE)
+        elif not items:
+            widget.addItem(empty)
+        else:
+            widget.addItems(items)
+
+    def texts(self, title: str) -> list[str]:
+        widget = self.lists[title]
+        return [widget.item(i).text() for i in range(widget.count())]
+
+
 class UserDetail(QWidget):
     """Placeholder text, or the tabs for one user."""
 
@@ -101,6 +144,14 @@ class UserDetail(QWidget):
         self.tabs = QTabWidget()
         self.general = GeneralTab()
         self.tabs.addTab(self.general, "General")
+        self.groups_tab = ListTab(("Member of", "Owns"))
+        self.methods_tab = ListTab(("Sign-in methods",))
+        self.certs_tab = ListTab(("Certificate user IDs",))
+        self.roles_tab = ListTab(("Active roles", "Eligible roles (PIM)"))
+        self.tabs.addTab(self.groups_tab, "Groups")
+        self.tabs.addTab(self.methods_tab, "Sign-in methods")
+        self.tabs.addTab(self.certs_tab, "Certificate IDs")
+        self.tabs.addTab(self.roles_tab, "Roles")
         self.stack.addWidget(self.message)
         self.stack.addWidget(self.tabs)
         layout = QVBoxLayout(self)
@@ -149,6 +200,17 @@ class UserDetail(QWidget):
         self._pending = False
         self.profile = profile
         self.general.show_profile(profile)
+        self.groups_tab.show_items("Member of", None if profile.groups is None else
+                                   sorted((g.label for g in profile.groups), key=str.casefold), "no groups")
+        self.groups_tab.show_items("Owns", None if profile.owned is None else
+                                   sorted((o.label for o in profile.owned), key=str.casefold), "nothing")
+        self.methods_tab.show_items("Sign-in methods", profile.auth_methods, "none registered")
+        # cert IDs come back as [] both when there are none and when they couldn't be read; the warning
+        # list says which (the General tab shows it)
+        cert_unreadable = any("certificate" in w.lower() for w in profile.warnings)
+        self.certs_tab.show_items("Certificate user IDs", None if cert_unreadable else profile.cert_user_ids, "none")
+        self.roles_tab.show_items("Active roles", profile.roles_active, "none")
+        self.roles_tab.show_items("Eligible roles (PIM)", profile.roles_eligible, "none")
         self.stack.setCurrentWidget(self.tabs)
 
     def _failed(self, generation: int, exc: BaseException) -> None:

@@ -257,3 +257,48 @@ def test_pressing_enter_in_the_preview_cancels_instead_of_applying(qtbot, window
     qtbot.keyClick(plan, Qt.Key.Key_Return)
     qtbot.waitUntil(lambda: win.change is None)
     assert ctrl.done.cancelled and win.session.graph.writes == []
+
+
+# ---- the other property tabs ----------------------------------------------------------------
+
+def test_the_property_tabs_show_groups_methods_cert_ids_and_roles(qtbot, window):
+    win = window()
+
+    win.select_user("u-alice")
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    calls_before = len(win.session.graph.calls)
+    d = win.detail
+    assert d.groups_tab.texts("Member of") == ["Project X (Microsoft 365)"] and d.groups_tab.texts("Owns") == ["nothing"]
+    assert len(d.methods_tab.texts("Sign-in methods")) == 2
+    assert d.certs_tab.texts("Certificate user IDs") == ["X509:<PN>alice@contoso.com"]
+    assert d.roles_tab.texts("Active roles") == ["none"]
+    for index in range(d.tabs.count()):            # switching tabs asks Graph for nothing more
+        d.tabs.setCurrentIndex(index)
+    assert len(win.session.graph.calls) == calls_before
+
+
+def test_an_admin_shows_their_roles(qtbot, window):
+    win = window()
+    win.select_user("u-admin")
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    assert win.detail.roles_tab.texts("Active roles") == ["Global Administrator"]
+    assert win.detail.roles_tab.texts("Eligible roles (PIM)") == ["Global Administrator"]
+
+
+def test_unreadable_parts_say_so_instead_of_looking_empty(qtbot, window):
+    from entra_auditor.toolkit.models import UserProfile
+
+    def partial(graph, user_id):
+        return UserProfile(id=user_id, display_name="Alice Ng", groups=None, auth_methods=None, roles_active=None,
+                           warnings=["certificate user IDs: unavailable (403)", "group memberships: unavailable (403)"])
+
+    win = window()
+    win.detail._loader = partial
+    win.select_user("u-alice")
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    d = win.detail
+    assert d.groups_tab.texts("Member of") == ["(could not be read)"]
+    assert d.methods_tab.texts("Sign-in methods") == ["(could not be read)"]
+    assert d.certs_tab.texts("Certificate user IDs") == ["(could not be read)"]
+    assert d.roles_tab.texts("Active roles") == ["(could not be read)"]
+    assert "group memberships" in d.general.warnings.text()
