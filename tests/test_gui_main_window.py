@@ -605,3 +605,90 @@ def test_cancelling_offboarding_sends_nothing(qtbot, window):
     open_offboarding(qtbot, win).cancel_button.click()
     qtbot.waitUntil(lambda: win.dialog is None)
     assert win.change is None and tenant.writes == [] and win.offboard_action.isEnabled()
+
+
+# ---- onboarding -------------------------------------------------------------------------------------
+
+def onboarding_tenant():
+    tenant = licence_tenant()
+    tenant.eligible_names.append("User Administrator")
+    tenant.role_ids["User Administrator"] = "r-user-administrator"
+    tenant.users["u-alice"].update(usageLocation="US")
+    tenant.managers["u-alice"] = "u-bob"
+    tenant.members.update({"g-fin": {"u-alice"}, "g-dyn": {"u-alice"}})
+    return tenant
+
+
+def open_new_user(qtbot, win, template_id=None):
+    from entra_auditor.gui.onboarding import NewUserDialog
+    if template_id:
+        win.select_user(template_id)
+    win.new_user_action.trigger()
+    qtbot.waitUntil(lambda: isinstance(win.dialog, NewUserDialog))
+    return win.dialog
+
+
+def test_the_new_user_dialog_suggests_names_until_they_are_edited(qtbot, window):
+    dialog = open_new_user(qtbot, window(onboarding_tenant()), "u-alice")
+    qtbot.keyClicks(dialog.given, "Nia")
+    qtbot.keyClicks(dialog.surname, "Novak")
+    assert dialog.display.text() == "Nia Novak" and dialog.upn.text() == "nia.novak@contoso.com"
+    dialog.upn.clear()
+    qtbot.keyClicks(dialog.upn, "nnovak@contoso.com")           # edited by hand: no longer overwritten
+    qtbot.keyClicks(dialog.surname, "a")
+    assert dialog.upn.text() == "nnovak@contoso.com" and dialog.display.text() == "Nia Novaka"
+    texts = {key: box.text() for key, box in dialog.boxes.items()}
+    assert texts["copy_manager"] == "Manager (Bob Stone)"
+    assert texts["copy_licences"] == "1 direct licence (Microsoft 365 E3 (SPE_E3))"
+    assert texts["copy_groups"] == "2 group memberships (1 can't be copied)"
+    assert dialog.password not in " ".join(w.text() for w in dialog.findChildren(type(dialog.display)))
+    dialog.cancel_button.click()
+
+
+def test_a_user_is_created_from_a_template_and_the_password_shown_once(qtbot, window):
+    tenant = onboarding_tenant()
+    win = window(tenant)
+    dialog = open_new_user(qtbot, win, "u-alice")
+    qtbot.keyClicks(dialog.given, "Nia")
+    qtbot.keyClicks(dialog.surname, "Novak")
+    password = dialog.password
+    dialog.ok_button.click()
+    qtbot.waitUntil(lambda: win.change is not None)
+    ctrl = win.change
+    plan = wait_for(qtbot, ctrl, PlanDialog)
+    shown = " ".join(label.text() for label in plan.findChildren(type(plan.findChildren(type(win.count_label))[0])))
+    assert password not in shown and tenant.writes == []
+    plan.apply_button.click()
+    wait_for(qtbot, ctrl, ElevationDialog).activate_button.click()
+    justification = wait_for(qtbot, ctrl, JustificationDialog)
+    qtbot.keyClicks(justification.text, "Starter HR-12")
+    justification.ok_button.click()
+    result = wait_for(qtbot, ctrl, ResultDialog)
+    assert result.status_label.text().startswith("OK:") and result.password_label.text() == password
+    result.accept()
+    assert tenant.created == ["new-1"] and tenant.managers["new-1"] == "u-bob" and "new-1" in tenant.members["g-fin"]
+    assert tenant.passwords["new-1"]["password"] == password and "sku-e3" in tenant.licences["new-1"]
+    qtbot.waitUntil(lambda: not win.loading and win.select_user("new-1"))      # the directory was reloaded
+    assert win.selected_user().upn == "nia.novak@contoso.com"
+
+
+def test_a_user_can_be_created_without_a_template_and_bad_input_is_explained(qtbot, window, monkeypatch):
+    tenant = onboarding_tenant()
+    tenant.active_roles["r"] = "User Administrator"
+    win = window(tenant)
+    said = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: said.append(a[2]))
+    dialog = open_new_user(qtbot, win)
+    assert dialog.template is None and dialog.boxes == {} and dialog.domain == "contoso.com"
+    dialog.ok_button.click()                                    # nothing filled in
+    qtbot.waitUntil(lambda: win.dialog is None)
+    assert "display name" in said[0] and win.change is None and tenant.writes == []
+    dialog = open_new_user(qtbot, win)
+    qtbot.keyClicks(dialog.given, "Sol")
+    dialog.ok_button.click()
+    qtbot.waitUntil(lambda: win.change is not None)
+    ctrl = win.change
+    assert len(ctrl.flow.plan.requests) == 1
+    wait_for(qtbot, ctrl, PlanDialog).apply_button.click()
+    wait_for(qtbot, ctrl, ResultDialog).accept()
+    assert tenant.users["new-1"]["userPrincipalName"] == "sol@contoso.com"

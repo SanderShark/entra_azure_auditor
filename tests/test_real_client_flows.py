@@ -167,3 +167,19 @@ def test_a_licence_change_is_one_documented_post(tmp_path):
     assert execute_plan(client, plan, log_path=tmp_path / "log.jsonl").status == "ok"
     assert seen[-1] == ("POST", "/v1.0/users/u1/assignLicense",
                         {"addLicenses": [{"skuId": "s-e3", "disabledPlans": []}], "removeLicenses": ["s-old"]})
+
+
+def test_onboarding_creates_the_user_then_uses_the_returned_id(tmp_path):
+    from entra_auditor.toolkit.onboarding import NewUser, Template, plan_onboard
+    seen, handler = recorder({"/v1.0/users": httpx.Response(201, json={"id": "new-guid"})})
+    client = client_for(handler)
+    template = Template(user=USER, attributes={"usageLocation": "US"}, manager_id="mgr1", manager_name="Boss",
+                        groups=[GROUP])
+    plan = plan_onboard(NewUser(display_name="Nia Novak", upn="nia@x.com", password="Corr3ct-Horse-Battery!"),
+                        template, base=client.base_url)
+    assert execute_plan(client, plan, log_path=tmp_path / "log.jsonl", sleep=lambda s: None).status == "ok"
+    assert seen[0][:2] == ("POST", "/v1.0/users") and seen[0][2]["passwordProfile"]["forceChangePasswordNextSignIn"]
+    assert seen[1:] == [
+        ("PUT", "/v1.0/users/new-guid/manager/$ref", {"@odata.id": "https://graph.microsoft.com/v1.0/users/mgr1"}),
+        ("POST", "/v1.0/groups/g1/members/$ref", {"@odata.id": "https://graph.microsoft.com/v1.0/directoryObjects/new-guid"})]
+    assert "Corr3ct" not in (tmp_path / "log.jsonl").read_text()

@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Literal, Mapping
 
-from ..graph.client import GraphClient, GraphError, GraphPermissionError
+from ..graph.client import GraphClient, GraphError, GraphNotFoundError, GraphPermissionError
 from . import audit_log
 from .admin_units import AdminUnit, AuMember
 from .models import GroupSummary, UserSummary
@@ -28,6 +28,11 @@ from .passwords import password_problems
 
 DEFAULT_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 PASSWORD_METHOD_ID = "28c10230-6103-485e-b985-444c60001490"  # the user's password method
+# Stands for the id of the object a plan creates (see PlannedRequest.capture_id). Later requests in the same
+# plan use it in their path or body; it is filled in when the creating request has answered.
+NEW_ID = "{new-id}"
+REPLICATION_ATTEMPTS = 6      # a just-created object can take a few seconds to be known everywhere
+REPLICATION_WAIT = 3.0
 
 # Roles that can perform each kind of change (names as shown in Entra / PIM).
 ROLES_USER_EDIT = ("User Administrator",)
@@ -69,6 +74,7 @@ class PlannedRequest:
     json: dict[str, Any] | None = None
     description: str = ""
     secret_keys: tuple[str, ...] = ()
+    capture_id: bool = False          # this request creates an object; its id replaces NEW_ID afterwards
 
     def redacted_json(self) -> dict[str, Any] | None:
         if self.json is None:
@@ -406,8 +412,27 @@ def plan_remove_group_owners(group: GroupSummary, users: list[Any]) -> ActionPla
 # Execution
 # --------------------------------------------------------------------------- #
 
+def _fill(value: Any, new_id: str) -> Any:
+    """Replace NEW_ID in a path or (nested) body."""
+    if isinstance(value, str):
+        return value.replace(NEW_ID, new_id)
+    if isinstance(value, dict):
+        return {k: _fill(v, new_id) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fill(v, new_id) for v in value]
+    return value
+
+
+def _not_replicated_yet(exc: GraphError) -> bool:
+    text = str(exc).lower()
+    return isinstance(exc, GraphNotFoundError) or (exc.status_code == 400 and "exist" in text and "already" not in text)
+
+
 def _already_applied(request: PlannedRequest, exc: GraphError) -> bool:
-    """Idempotence: adding someone already in the group, or removing someone who isn't."""
+    """Idempotence: adding someone already in the group, or removing someone who isn't.
+    Never for a request that creates an object: "already exists" there is a real failure."""
+    if request.capture_id:
+        return False
     if request.method == "POST" and exc.status_code == 400 and "already exist" in str(exc).lower():
         return True
     return request.method == "DELETE" and exc.status_code == 404
@@ -446,11 +471,26 @@ def execute_plan(
 
     result = ActionResult("ok")
     done = failed = 0
+    new_id: str | None = None
+
+    def send(request: PlannedRequest) -> Any:
+        uses_new = NEW_ID in request.path or NEW_ID in str(request.json)
+        if not uses_new:
+            return graph.request(request.method, request.path, json=request.json)
+        path, body = _fill(request.path, new_id or ""), _fill(request.json, new_id or "")
+        for attempt in range(REPLICATION_ATTEMPTS):
+            try:
+                return graph.request(request.method, path, json=body)
+            except GraphError as exc:      # the new object isn't known everywhere yet: nothing was applied
+                if not _not_replicated_yet(exc) or attempt == REPLICATION_ATTEMPTS - 1:
+                    raise
+                sleep(REPLICATION_WAIT)
+
     for request in plan.requests:
         try:
-            response = graph.request(request.method, request.path, json=request.json)
+            response = send(request)
         except GraphPermissionError as exc:
-            if plan.continue_on_error and done > 0:
+            if plan.continue_on_error and done > 0 and not request.capture_id:
                 failed += 1
                 result.error = exc
                 result.lines.append(f"{request.description}: NOT PERMITTED ({exc})")
@@ -463,7 +503,7 @@ def execute_plan(
                 result.lines.append(f"{request.description}: already in that state")
                 done += 1
                 continue
-            if plan.continue_on_error:
+            if plan.continue_on_error and not request.capture_id:
                 failed += 1
                 result.error = exc
                 result.lines.append(f"{request.description}: FAILED ({exc})")
@@ -474,6 +514,11 @@ def execute_plan(
 
         done += 1
         result.lines.append(f"{request.description}: done")
+        if request.capture_id:
+            new_id = str(response.body.get("id") or "")
+            if not new_id:
+                result.status, result.message = "partial", f"{request.description}: Graph returned no id; stopped."
+                break
         if request.path.endswith("/resetPassword"):
             generated = str(response.body.get("newPassword") or "")
             if generated:

@@ -212,6 +212,11 @@ registration needs **Allow public client flows** for device code, and the `http:
 So far:
 - **Users:** whole directory loaded once and filtered as you type; General, Groups, Sign-in methods,
   Certificate IDs and Roles tabs; enable/disable.
+- **New user...** (toolbar, Users page): create a user, modelled on the selected user if there is one:
+  department, title, company, office and usage location, the manager, direct licences that still have a free
+  unit, and group memberships Graph can change. The initial password is generated, never shown in previews
+  or logs, and shown once at the end. Admin roles, role-assignable groups and administrative units are
+  never copied.
 - **Offboard...** (toolbar, Users page): the leaver workflow as one previewed change: disable, sign out
   everywhere, reset the password, remove direct licences, group memberships, optionally ownerships, and
   administrative units. It lists what it leaves alone (admin roles, dynamic/synced/Exchange groups, the

@@ -60,6 +60,9 @@ class FakeTenant:
         self.skus = {}
         self.licences = {}
         self.skus_denied = False
+        self.managers = {}               # user id -> manager's user id
+        self.replication_misses = 0      # how many requests about a just-created user answer 404 first
+        self.created = []                # ids of users created through POST /users
         self.refuse = []                 # regexes: a write whose path matches answers 403 (needs a higher role)
         self.break_paths = []            # regexes: a write whose path matches answers 500
         self.unreadable_groups = set()   # group ids whose members/owners answer 403
@@ -364,7 +367,11 @@ class FakeTenant:
             if sel == ['authorizationInfo']:
                 return {'authorizationInfo': {'certificateUserIds': list(self.certs.get(uid, []))}}
             return dict(u)
-        if re.match('/users/([^/]+)/manager$', path):
+        m = re.match('/users/([^/]+)/manager$', path)
+        if m and m.group(1) in self.managers:
+            boss = self.users[self.managers[m.group(1)]]
+            return {'id': boss['id'], 'displayName': boss['displayName']}
+        if m:
             return {'displayName': 'Mia Manager'}
         m = re.match('/groups/([^/]+)$', path)
         if m:
@@ -401,6 +408,26 @@ class FakeTenant:
             raise GraphPermissionError('Authorization_RequestDenied: Insufficient privileges to complete the operation.', status_code=403, code='Authorization_RequestDenied')
         if any(re.search(pattern, path) for pattern in self.break_paths):
             raise GraphError('Service unavailable', status_code=500)
+        if self.replication_misses > 0 and any(uid in path or uid in str(json) for uid in self.created):
+            self.replication_misses -= 1
+            raise GraphNotFoundError('Request_ResourceNotFound: Resource does not exist or one of its queried reference-property objects are not present.', status_code=404, code='Request_ResourceNotFound')
+        if path == '/users' and method == 'POST':
+            missing = [k for k in ('accountEnabled', 'displayName', 'mailNickname', 'userPrincipalName', 'passwordProfile') if k not in json]
+            if missing or not json['passwordProfile'].get('password'):
+                raise GraphError(f'A value is required for property {missing or "password"}', status_code=400, code='Request_BadRequest')
+            if any(u['userPrincipalName'].lower() == json['userPrincipalName'].lower() for u in self.users.values()):
+                raise GraphError('Another object with the same value for property userPrincipalName already exists.', status_code=400, code='Request_BadRequest')
+            uid = f'new-{len(self.created) + 1}'
+            self.users[uid] = U(uid, json['displayName'], json['userPrincipalName'],
+                                **{k: v for k, v in json.items() if k not in ('displayName', 'userPrincipalName', 'passwordProfile')})
+            self.passwords = getattr(self, 'passwords', {})
+            self.passwords[uid] = json['passwordProfile']
+            self.created.append(uid)
+            return GraphResponse(201, {}, {'id': uid, 'userPrincipalName': json['userPrincipalName']})
+        m = re.match('/users/([^/]+)/manager/\\$ref$', path)
+        if m and method == 'PUT':
+            self.managers[m.group(1)] = json['@odata.id'].rsplit('/', 1)[-1]
+            return GraphResponse(204)
         m = re.match('/groups/([^/]+)/(members|owners)/\\$ref$', path)
         if m and method == 'POST':
             gid, edge = m.groups()

@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from ..toolkit.actions import PlanError, plan_set_enabled
 from ..toolkit.leaver import LeaverFacts, gather_leaver_facts, plan_leaver
+from ..toolkit.onboarding import Template, gather_template, plan_onboard
 from ..toolkit.directory import LoadCancelled, load_users
 from ..toolkit.models import UserSummary
 from ..toolkit.search import get_user
@@ -41,6 +42,7 @@ from .admin_units_page import AdminUnitsPage
 from .change import ChangeController
 from .groups_page import GroupsPage
 from .leaver import LeaverDialog
+from .onboarding import NewUserDialog
 from .roles_page import RolesPage
 from .session import GuiSession
 from .tasks import TaskRunner
@@ -161,6 +163,11 @@ class MainWindow(QMainWindow):
         self.offboard_action.setEnabled(False)
         self.offboard_action.triggered.connect(self.offboard_selected)
         toolbar.addAction(self.offboard_action)
+        self.new_user_action = QAction("New user...", self)
+        self.new_user_action.setToolTip("Create a user. Select an existing user first to copy their department, "
+                                        "manager, licences and groups.")
+        self.new_user_action.triggered.connect(self.new_user)
+        toolbar.addAction(self.new_user_action)
         self.dialog: Optional[QDialog] = None
         self._gathering = False
         self.addToolBar(toolbar)
@@ -202,6 +209,7 @@ class MainWindow(QMainWindow):
         on_users = page is self.users_page
         self.toggle_action.setVisible(on_users)
         self.offboard_action.setVisible(on_users)
+        self.new_user_action.setVisible(on_users)
         self.refresh_action.setText("Reload directory" if on_users else "Reload")
         self.refresh_action.setEnabled(not self.loading if on_users else True)
         activate = getattr(page, "activate_page", None)
@@ -322,6 +330,7 @@ class MainWindow(QMainWindow):
 
     def _update_actions(self, user: Optional[UserSummary]) -> None:
         self.offboard_action.setEnabled(user is not None and self.change is None and not self._gathering)
+        self.new_user_action.setEnabled(self.change is None and not self._gathering)
         if user is None or user.account_enabled is None:
             self.toggle_action.setText("Disable account")
             self.toggle_action.setEnabled(False)
@@ -391,13 +400,65 @@ class MainWindow(QMainWindow):
         dialog.finished.connect(answered)
         dialog.open()
 
+    @Slot()
+    def new_user(self) -> None:
+        """Create a user, modelled on the selected one if there is a selection."""
+        if self.change is not None or self._gathering:
+            return
+        model = self.selected_user()
+        if model is None:
+            self._open_new_user(None)
+            return
+        self._gathering = True
+        self._update_actions(model)
+        self.statusBar().showMessage(f"Reading {model.label} as a template...")
+        graph = self.session.graph
+
+        def failed(exc: BaseException) -> None:
+            self._gathering = False
+            self._update_actions(self.selected_user())
+            self.statusBar().showMessage("The template could not be read.", 10_000)
+            QMessageBox.warning(self, "Could not read the template", f"Reading {model.label} failed:\n\n{exc}")
+
+        self.runner.submit(lambda: gather_template(graph, model.id), self._open_new_user, failed)
+
+    def _open_new_user(self, template: Optional[Template]) -> None:
+        self._gathering = False
+        self.statusBar().clearMessage()
+        self._update_actions(self.selected_user())
+        identity = self.session.identity.removeprefix("user:")
+        dialog = NewUserDialog(template, self, default_domain=identity.rpartition("@")[2] if "@" in identity else "")
+        self.dialog = dialog
+
+        def answered(code: int) -> None:
+            self.dialog = None
+            if code != QDialog.DialogCode.Accepted:
+                return
+            new = dialog.new_user()
+            try:
+                plan = plan_onboard(new, template, dialog.options(), self.session.graph.base_url)
+            except PlanError as exc:
+                QMessageBox.information(self, "Can't create this user", str(exc))
+                return
+
+            def finished(done: Any) -> None:
+                if done.result.status in ("ok", "partial"):
+                    self.load_directory()           # the new user appears in the list
+
+            self.start_change(plan, on_finished=finished, extra_secrets={"password": new.password})
+
+        dialog.finished.connect(answered)
+        dialog.open()
+
     def start_change(self, plan: Any, user: Optional[UserSummary] = None, *,
-                     on_finished: Optional[Callable[[Any], None]] = None) -> Optional[ChangeController]:
+                     on_finished: Optional[Callable[[Any], None]] = None,
+                     extra_secrets: Optional[dict[str, str]] = None) -> Optional[ChangeController]:
         """Run a change through the dialogs. One at a time: returns None if another is still running."""
         if self.change is not None:
             QMessageBox.information(self, "Another change is running", "Finish the current change first.")
             return None
-        controller = ChangeController(self.session, plan, self.runner, self, sleep=self._change_sleep)
+        controller = ChangeController(self.session, plan, self.runner, self, sleep=self._change_sleep,
+                                      extra_secrets=extra_secrets)
         self.change = controller
         self._update_actions(self.selected_user())
         controller.finished.connect(lambda done: self._change_finished(done, user, on_finished))
