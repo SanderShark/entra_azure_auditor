@@ -26,6 +26,10 @@ class _Relay(QObject):
 class _Job(QRunnable):
     def __init__(self, job_id: int, fn: Callable[[], Any], relay: _Relay) -> None:
         super().__init__()
+        # The pool must not delete the C++ object when run() returns: Python owns this job (the runner keeps
+        # it until its result has been delivered). With auto-delete on, the pool's delete could race with
+        # Python collecting the same object and crash the process now and then.
+        self.setAutoDelete(False)
         self._job_id, self._fn, self._relay = job_id, fn, relay
 
     def run(self) -> None:  # worker thread
@@ -50,13 +54,16 @@ class TaskRunner(QObject):
         self._relay = _Relay()
         self._relay.finished.connect(self._deliver)   # receiver is self: queued onto the UI thread
         self._callbacks: dict[int, tuple[Optional[Callable], Callable]] = {}
+        self._jobs: dict[int, _Job] = {}        # keeps each job alive until _deliver has run for it
         self._ids = itertools.count(1)
 
     def submit(self, fn: Callable[[], Any], on_done: Optional[Callable[[Any], None]] = None,
                on_error: Optional[Callable[[BaseException], None]] = None) -> int:
         job_id = next(self._ids)
         self._callbacks[job_id] = (on_done, on_error or _log_error)
-        self._pool.start(_Job(job_id, fn, self._relay))
+        job = _Job(job_id, fn, self._relay)
+        self._jobs[job_id] = job
+        self._pool.start(job)
         return job_id
 
     @property
@@ -70,6 +77,7 @@ class TaskRunner(QObject):
     @Slot(int, bool, object)
     def _deliver(self, job_id: int, ok: bool, value: Any) -> None:
         on_done, on_error = self._callbacks.pop(job_id, (None, _log_error))
+        self._jobs.pop(job_id, None)            # run() has returned: the job can go
         if ok:
             if on_done is not None:
                 on_done(value)

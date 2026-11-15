@@ -56,7 +56,7 @@ entra_auditor/
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, leaver (offboarding dialog), onboarding (new-user dialog), groups_page, devices_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~1005 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~1010 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -139,6 +139,13 @@ tests/                 ~1005 tests, no network; fakes.py, builders.py, conftest.
 - "Unknown is not no" in the sync tools too: an unknown operator or function gives UNKNOWN (three-valued logic;
   `True || unknown` is still True), a NULL flow passes the decision to the next rule, and the impact validator
   fails on anything it can't judge.
+- Two lifetime bugs made the app (and the test suite) crash or fail now and then; both are easy to reintroduce:
+  (1) a QRunnable with auto-delete on is deleted by the pool while Python may be collecting the same object:
+  `tasks._Job` turns auto-delete off and `TaskRunner` holds the job until its result is delivered;
+  (2) `lambda: self.flow.justify(dialog.reason)` read a widget INSIDE the worker, after the dialog (deleted on
+  close) was gone. Read widget values on the UI thread into plain variables first, then start the worker.
+  An intermittent crash shows up as a run that ends in a traceback dump instead of "N passed": check the exit
+  code, and run the suite several times after touching threads or dialogs.
 - A wrapping QLabel can't break a value with no spaces (a distinguished name): it was clipped at the pane's
   edge. One-line values that can be long go in a read-only, frameless QLineEdit (`user_detail._value_line`).
 - The property pane is narrow: a five-column table there hid its most important column behind a scrollbar

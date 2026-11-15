@@ -794,3 +794,39 @@ def test_an_unreadable_on_premises_record_says_so(qtbot, window):
     qtbot.waitUntil(lambda: win.detail.profile is not None)
     assert win.detail.on_prem_tab.status.text() == "(could not be read)"
     assert win.detail.on_prem_tab.values["Location"].text() == "(could not be read)"
+
+
+# ---- thread and lifetime rules -----------------------------------------------------------------------
+
+def test_the_justification_is_read_on_the_ui_thread_before_the_worker_starts(qtbot, window, monkeypatch):
+    """The worker used to read the text box itself, after the dialog (deleted on close) could be gone."""
+    from PySide6.QtCore import QThread
+    from PySide6.QtWidgets import QApplication
+    read_on = []
+    original = JustificationDialog.reason
+    monkeypatch.setattr(JustificationDialog, "reason", property(
+        lambda self: (read_on.append(QThread.currentThread() is QApplication.instance().thread()), original.fget(self))[1]))
+    win = window()
+    win.select_user("u-alice")
+    win.toggle_action.trigger()
+    qtbot.waitUntil(lambda: win.change is not None)
+    ctrl = win.change
+    wait_for(qtbot, ctrl, PlanDialog).apply_button.click()
+    wait_for(qtbot, ctrl, ElevationDialog).activate_button.click()
+    justification = wait_for(qtbot, ctrl, JustificationDialog)
+    qtbot.keyClicks(justification.text, "INC-99")
+    justification.ok_button.click()
+    wait_for(qtbot, ctrl, ResultDialog).accept()
+    assert read_on and all(read_on)                             # every read happened on the UI thread
+
+
+def test_the_task_runner_keeps_a_job_alive_until_its_result_is_delivered(qtbot, runner):
+    import gc
+    import threading
+    release, done = threading.Event(), []
+    job_id = runner.submit(lambda: release.wait(5) and "ok", done.append)
+    assert job_id in runner._jobs and not runner._jobs[job_id].autoDelete()
+    gc.collect()                                                # nothing else refers to the job
+    release.set()
+    qtbot.waitUntil(lambda: done == ["ok"])
+    assert runner._jobs == {} and not runner.busy

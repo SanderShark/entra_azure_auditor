@@ -352,10 +352,15 @@ class ChangeController(QObject):
                       lambda d: self._on_step(self.flow.choose_role(None)))
         elif isinstance(step, NeedsJustification):
             self._ask(JustificationDialog(step, self.parent_widget),
-                      lambda d: self._run(lambda: self.flow.justify(d.reason), f"Activating {step.role.name}..."),
+                      lambda d: self._justify(d.reason, step.role.name),     # read the widget HERE, on the UI thread
                       lambda d: self._on_step(self.flow.justify(None)))
         elif isinstance(step, Done):
             self._finish(step)
+
+    def _justify(self, reason: str, role_name: str) -> None:
+        """`reason` is plain text by now: the worker must never read it from the dialog, which is deleted
+        as soon as it closes (that crashed, or failed the change, now and then)."""
+        self._run(lambda: self.flow.justify(reason), f"Activating {role_name}...")
 
     def _ask(self, dialog: QDialog, on_accept: Callable[[Any], None], on_reject: Callable[[Any], None]) -> None:
         self.dialog = dialog
