@@ -212,6 +212,9 @@ registration needs **Allow public client flows** for device code, and the `http:
 So far:
 - **Users:** whole directory loaded once and filtered as you type; General, Groups, Sign-in methods,
   Certificate IDs and Roles tabs; enable/disable.
+- **Licences** (a tab on each user): what they hold and whether each licence is direct or inherited from a
+  group; assign and remove direct licences from a tick list showing what is free, setting the usage location
+  in the same change when it is missing.
 - **Who can manage** (a tab on each user, read-only): the admins whose role reaches this user and what each
   can do (reset password, enable/disable, sign-in methods, edit profile, licences), tenant-wide or through an
   administrative unit, active or PIM-eligible. It applies Microsoft's rules: a restricted management unit

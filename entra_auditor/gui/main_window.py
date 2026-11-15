@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         # -- properties ----------------------------------------------------------- #
         self.detail = UserDetail(runner, lambda: self.session.graph)
         self.detail.group_opened.connect(self.show_group)
+        self.detail.licences_tab.on_plan = lambda plan, user: self.start_change(plan, user)
 
         self.users_page = QSplitter()
         self.users_page.addWidget(middle)

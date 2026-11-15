@@ -41,6 +41,7 @@ ROLES_ROLE_GROUPS = ("Privileged Role Administrator",)
 ROLES_CERT_IDS = ("Privileged Authentication Administrator",)
 ROLES_CERT_IDS_SYNCED = ("Hybrid Identity Administrator",)
 ROLES_ADMIN_UNITS = ("Privileged Role Administrator",)
+ROLES_LICENCES = ("License Administrator", "User Administrator")
 EDITABLE_AU_FIELDS = ("displayName", "description", "membershipType", "membershipRule",
                       "membershipRuleProcessingState")
 
@@ -169,6 +170,55 @@ def plan_update_user(
         plan.warnings.append(
             "This account is synced from on-premises AD. Graph rejects changes to attributes "
             "mastered there (name, title, department, ...). Change them in AD instead.")
+    return plan
+
+
+def plan_change_licences(user: UserSummary, add: list[Any], remove: list[Any], *, current: list[Any],
+                         usage_location: str | None, set_usage_location: str | None = None) -> ActionPlan:
+    """Assign and/or remove licences in one request. ``add`` are ``licences.Sku``; ``remove`` anything with
+    ``sku_id`` and ``name``; ``current`` the user's ``licences.UserLicence`` (to tell direct from inherited).
+    A user without a usage location needs one first: pass ``set_usage_location`` to set it in the same plan."""
+    held = {lic.sku_id: lic for lic in current}
+    add = [s for s in add if not (s.sku_id in held and held[s.sku_id].direct)]
+    if not add and not remove:
+        raise PlanError("Nothing to change: the user already has exactly those licences.")
+    for sku in add:
+        if not sku.assignable:
+            raise PlanError(f"{sku.name} can't be assigned (subscription status: {sku.status or 'unknown'}).")
+        if sku.available == 0:
+            raise PlanError(f"No {sku.name} licences are left ({sku.used:,} of {sku.total:,} in use).")
+    for sku in remove:
+        licence = held.get(sku.sku_id)
+        if licence is None:
+            raise PlanError(f"The user doesn't have {sku.name}.")
+        if not licence.direct:
+            raise PlanError(f"{licence.name} comes from the group {', '.join(licence.groups) or '?'}; "
+                            "remove the user from that group instead.")
+    requests: list[PlannedRequest] = []
+    details: list[str] = []
+    if add and not usage_location:
+        location = (set_usage_location or "").strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}", location):
+            raise PlanError("A licence can only be assigned to a user with a usage location: give the "
+                            "two-letter country code (for example US, GB, DE).")
+        requests.append(PlannedRequest("PATCH", f"/users/{segment(user.id)}", {"usageLocation": location},
+                                       "Set usage location"))
+        details.append(f"usageLocation: (empty) -> '{location}'")
+    requests.append(PlannedRequest(
+        "POST", f"/users/{segment(user.id)}/assignLicense",
+        {"addLicenses": [{"skuId": s.sku_id, "disabledPlans": []} for s in add],
+         "removeLicenses": [s.sku_id for s in remove]},
+        "Change licences"))
+    details += [f"+ {s.name}" for s in add] + [f"- {s.name}" for s in remove]
+    plan = ActionPlan(action="user.licences", title="Change licences", target_type="user", target_id=user.id,
+                      target_name=user.full_label, requests=requests, details=details,
+                      suggested_roles=ROLES_LICENCES)
+    if remove:
+        plan.warnings.append("Removing a licence cuts the user off from that service; its data (mailbox, "
+                             "OneDrive, ...) is deleted after Microsoft's retention period.")
+    kept = [held[s.sku_id] for s in remove if held[s.sku_id].groups]
+    if kept:
+        plan.warnings.append("Still inherited from a group afterwards: " + ", ".join(lic.name for lic in kept))
     return plan
 
 

@@ -7,6 +7,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QMessageBox  # noqa: E402
 
 from entra_auditor.graph.client import GraphError  # noqa: E402
@@ -273,7 +274,7 @@ def test_the_property_tabs_show_groups_methods_cert_ids_and_roles(qtbot, window)
     assert d.certs_tab.texts("Certificate user IDs") == ["X509:<PN>alice@contoso.com"]
     assert d.roles_tab.texts("Active roles") == ["none"]
     for index in range(d.tabs.count()):            # switching tabs asks Graph for nothing more...
-        if d.tabs.widget(index) is not d.managers_tab:     # ...except "Who can manage", which loads on demand
+        if d.tabs.widget(index) not in (d.managers_tab, d.licences_tab):   # ...except the two that load on demand
             d.tabs.setCurrentIndex(index)
     assert len(win.session.graph.calls) == calls_before
 
@@ -424,3 +425,96 @@ def test_who_can_manage_says_when_the_admins_cannot_be_read_and_a_failure_can_be
     win.detail.tabs.setCurrentWidget(tab)                       # looking again retries
     qtbot.waitUntil(lambda: tab.report is not None)
     assert "No admin with a user-management role was found." in tab.summary.text()
+
+
+# ---- licences -----------------------------------------------------------------------------------
+
+def licence_tenant(**kw):
+    tenant = FakeTenant(eligible=("License Administrator",), **kw)
+    tenant.add_sku("sku-e3", "SPE_E3", total=3).add_sku("sku-p1", "AAD_PREMIUM", total=5).add_sku("sku-full", "VISIOCLIENT", total=1)
+    tenant.users["u-alice"]["usageLocation"] = "US"
+    tenant.give_licence("u-alice", "sku-e3").give_licence("u-alice", "sku-p1", group="g-fin").give_licence("u-guest", "sku-full")
+    return tenant
+
+
+def open_licences(qtbot, win, user_id):
+    win.select_user(user_id)
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    tab = win.detail.licences_tab
+    assert tab.report is None and not tab.change_button.isEnabled()
+    win.detail.tabs.setCurrentWidget(tab)
+    qtbot.waitUntil(lambda: tab.report is not None)
+    return tab
+
+
+def test_the_licences_tab_shows_what_the_user_holds_and_where_from(qtbot, window):
+    tab = open_licences(qtbot, window(licence_tenant()), "u-alice")
+    assert tab.texts() == ["Microsoft 365 E3 (SPE_E3)  -  direct",
+                           "Microsoft Entra ID P1 (AAD_PREMIUM)  -  from group Finance Share"]
+    assert tab.summary.text() == "Usage location: US" and tab.change_button.isEnabled()
+
+
+def test_changing_licences_goes_through_the_dialog_the_preview_and_pim(qtbot, window):
+    from entra_auditor.gui.user_detail import LicenceDialog
+    tenant = licence_tenant()
+    win = window(tenant)
+    tab = open_licences(qtbot, win, "u-alice")
+    tab.change_button.click()
+    qtbot.waitUntil(lambda: isinstance(tab.dialog, LicenceDialog))
+    dialog = tab.dialog
+    lines = [dialog.list.item(i).text() for i in range(dialog.list.count())]
+    assert lines == ["Microsoft 365 E3 (SPE_E3)  -  2 of 3 free",
+                     "Microsoft Entra ID P1 (AAD_PREMIUM)  -  4 of 5 free  (inherited from Finance Share)",
+                     "Visio Plan 2 (VISIOCLIENT)  -  0 of 1 free"]
+    assert not dialog.list.item(2).flags() & Qt.ItemFlag.ItemIsEnabled       # none left: can't be ticked
+    assert not dialog.location.isEnabled()                                   # she has a usage location already
+    dialog.set_checked("SPE_E3", False)
+    dialog.set_checked("AAD_PREMIUM", True)
+    dialog.ok_button.click()
+    qtbot.waitUntil(lambda: win.change is not None)
+    ctrl = win.change
+    assert ctrl.flow.plan.details == ["+ Microsoft Entra ID P1 (AAD_PREMIUM)", "- Microsoft 365 E3 (SPE_E3)"]
+    wait_for(qtbot, ctrl, PlanDialog).apply_button.click()
+    wait_for(qtbot, ctrl, ElevationDialog).activate_button.click()
+    justification = wait_for(qtbot, ctrl, JustificationDialog)
+    qtbot.keyClicks(justification.text, "INC-30")
+    justification.ok_button.click()
+    wait_for(qtbot, ctrl, ResultDialog).accept()
+    assert tenant.licences["u-alice"] == {"sku-p1": {"direct": True, "groups": ["g-fin"]}}
+    qtbot.waitUntil(lambda: tab.report is not None and len(tab.texts()) == 1)   # the tab re-read the user
+    assert tab.texts() == ["Microsoft Entra ID P1 (AAD_PREMIUM)  -  direct, from group Finance Share"]
+
+
+def test_a_user_without_a_usage_location_is_asked_for_one(qtbot, window, monkeypatch):
+    from entra_auditor.gui.user_detail import LicenceDialog
+    tenant = licence_tenant()
+    tenant.active_roles["r"] = "License Administrator"
+    win = window(tenant)
+    tab = open_licences(qtbot, win, "u-bob")
+    assert tab.texts() == ["no licences"] and "not set" in tab.summary.text()
+    said = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: said.append(a[2]))
+    tab.change_button.click()
+    qtbot.waitUntil(lambda: isinstance(tab.dialog, LicenceDialog))
+    tab.dialog.set_checked("SPE_E3", True)
+    tab.dialog.ok_button.click()                                # no location given: explained, nothing started
+    qtbot.waitUntil(lambda: tab.dialog is None)
+    assert "usage location" in said[0] and win.change is None and tenant.writes == []
+    tab.change_button.click()
+    qtbot.waitUntil(lambda: isinstance(tab.dialog, LicenceDialog))
+    tab.dialog.set_checked("SPE_E3", True)
+    tab.dialog.location.setText("gb")
+    tab.dialog.ok_button.click()
+    qtbot.waitUntil(lambda: win.change is not None)
+    ctrl = win.change
+    wait_for(qtbot, ctrl, PlanDialog).apply_button.click()
+    wait_for(qtbot, ctrl, ResultDialog).accept()
+    assert tenant.users["u-bob"]["usageLocation"] == "GB" and "sku-e3" in tenant.licences["u-bob"]
+
+
+def test_licences_that_cannot_be_read_offer_no_changes(qtbot, window):
+    tenant = licence_tenant()
+    tenant.skus_denied = True
+    tab = open_licences(qtbot, window(tenant), "u-alice")
+    assert not tab.change_button.isEnabled() and "subscriptions couldn't be read" in tab.summary.text()
+    assert tab.texts()[0].startswith("sku-e3")                  # still listed, by id

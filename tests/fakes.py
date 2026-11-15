@@ -25,7 +25,7 @@ def G(i, name, **kw):
 
 class FakeTenant:
     base_url = BASE
-    ROLE_FOR_WRITES = {'Privileged Role Administrator', 'User Administrator', 'Groups Administrator', 'Helpdesk Administrator', 'Privileged Authentication Administrator', 'Global Administrator', 'Authentication Administrator'}
+    ROLE_FOR_WRITES = {'License Administrator', 'Privileged Role Administrator', 'User Administrator', 'Groups Administrator', 'Helpdesk Administrator', 'Privileged Authentication Administrator', 'Global Administrator', 'Authentication Administrator'}
 
     def __init__(self, *, propagation_delay=0, require_mfa=(), eligible=('User Administrator', 'Groups Administrator', 'Global Reader')):
         self.users = {u['id']: u for u in [U('u-alice', 'Alice Ng', 'alice@contoso.com', employeeId='E100', jobTitle='Engineer', department='IT', proxyAddresses=['SMTP:alice@contoso.com', 'smtp:a.ng@contoso.com'], otherMails=['alice@home.example']), U('u-bob', 'Bob Stone', 'bob@contoso.com'), U('u-bob2', 'Bob Smith', 'bob.smith@contoso.com'), U('u-guest', 'Partner Guest', 'partner_x.com#EXT#@contoso.onmicrosoft.com', userType='Guest', mail='partner@x.com'), U('u-sync', 'Sync Sam', 'sam@contoso.com', onPremisesSyncEnabled=True), U('u-admin', 'Ada Admin', 'ada@contoso.com'), U('u-obrien', "Pat O'Brien", 'pat@contoso.com'), U('11111111-2222-3333-4444-555555555555', 'Gina Guid', 'gina@contoso.com')]}
@@ -56,6 +56,10 @@ class FakeTenant:
         self.scoped_eligible = []
         self.scoped_active = {}
         self.group_role_scope = {}   # group id -> directoryScopeId of the roles it holds (default '/')
+        # licences (opt-in; see add_sku / give_licence): subscriptions, and per user {sku id: {'direct', 'groups'}}
+        self.skus = {}
+        self.licences = {}
+        self.skus_denied = False
         self.unreadable_groups = set()   # group ids whose members/owners answer 403
         self.memberof_denied = False # True: memberOf answers 403 (the target's AUs can't be read)
         # who holds which admin role (opt-in; see add_role_holder): (role, principal id, scope, 'active'|'eligible')
@@ -81,6 +85,44 @@ class FakeTenant:
         if au:
             self.group_role_scope[gid] = f'/administrativeUnits/{au}'
         return self
+
+    def add_sku(self, sku_id, part_number, total=10, status='Enabled', applies_to='User'):
+        self.skus[sku_id] = {'skuId': sku_id, 'skuPartNumber': part_number, 'prepaidUnits': {'enabled': total},
+                             'capabilityStatus': status, 'appliesTo': applies_to}
+        return self
+
+    def give_licence(self, user_id, sku_id, group=None):
+        """Assign directly, or (with `group`) as inherited from that group."""
+        held = self.licences.setdefault(user_id, {}).setdefault(sku_id, {'direct': False, 'groups': []})
+        if group:
+            held['groups'].append(group)
+        else:
+            held['direct'] = True
+        return self
+
+    def _consumed(self, sku_id):
+        return sum(1 for held in self.licences.values() if sku_id in held)
+
+    def _assign_license(self, uid, body):
+        user, held = self.users[uid], self.licences.setdefault(uid, {})
+        for sku_id in body['removeLicenses']:
+            if not held.get(sku_id, {}).get('direct'):
+                raise GraphError('User license is inherited from a group membership and it cannot be removed directly from the user.', status_code=400, code='Request_BadRequest')
+        for item in body['addLicenses']:
+            sku = self.skus.get(item['skuId'])
+            if sku is None:
+                raise GraphError('License assignment failed because service plan is invalid.', status_code=400, code='Request_BadRequest')
+            if not user.get('usageLocation'):
+                raise GraphError('License assignment cannot be done for user with invalid usage location.', status_code=400, code='Request_BadRequest')
+            if item['skuId'] not in held and self._consumed(item['skuId']) >= sku['prepaidUnits']['enabled']:
+                raise GraphError('Subscription does not have any available licenses.', status_code=400, code='Request_BadRequest')
+        for sku_id in body['removeLicenses']:
+            held[sku_id]['direct'] = False
+            if not held[sku_id]['groups']:
+                del held[sku_id]
+        for item in body['addLicenses']:
+            held.setdefault(item['skuId'], {'direct': False, 'groups': []})['direct'] = True
+        return GraphResponse(200, {}, {'id': uid})
 
     def add_role_holder(self, role, principal_id, state='active', au=None):
         """Give a user or group an admin role, tenant-wide or scoped to the administrative unit `au`."""
@@ -165,6 +207,12 @@ class FakeTenant:
             return
         if path == '/devices':
             yield from (dict(d) for d in self.devices.values())
+            return
+        if path == '/subscribedSkus':
+            if self.skus_denied:
+                raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
+            for sku_id, sku in self.skus.items():
+                yield {**sku, 'consumedUnits': self._consumed(sku_id)}
             return
         if path == '/directory/administrativeUnits':
             for au in self.admin_units.values():
@@ -302,6 +350,14 @@ class FakeTenant:
             sel = kw.get('select') or []
             if sel == ['signInActivity']:
                 return {'signInActivity': {'lastSignInDateTime': '2026-09-30T08:00:00Z', 'lastNonInteractiveSignInDateTime': '2026-10-01T09:00:00Z'}}
+            if 'licenseAssignmentStates' in sel:
+                held = self.licences.get(uid, {})
+                states = [{'skuId': s, 'assignedByGroup': None, 'state': 'Active', 'error': 'None'}
+                          for s, h in held.items() if h['direct']]
+                states += [{'skuId': s, 'assignedByGroup': g, 'state': 'Active', 'error': 'None'}
+                           for s, h in held.items() for g in h['groups']]
+                return {'usageLocation': u.get('usageLocation'), 'licenseAssignmentStates': states,
+                        'assignedLicenses': [{'skuId': s, 'disabledPlans': []} for s in held]}
             if sel == ['authorizationInfo']:
                 return {'authorizationInfo': {'certificateUserIds': list(self.certs.get(uid, []))}}
             return dict(u)
@@ -396,6 +452,9 @@ class FakeTenant:
             self.reset_polls = 0
             body = {} if (json or {}).get('newPassword') else {'newPassword': 'Gen3rated!Pw42'}
             return GraphResponse(202, {'location': f'{BASE}/users/{m.group(1)}/authentication/operations/op1'}, body)
+        m = re.match('/users/([^/]+)/assignLicense$', path)
+        if m and method == 'POST':
+            return self._assign_license(m.group(1), json)
         if path.endswith('/revokeSignInSessions'):
             return GraphResponse(200, {}, {'value': True})
         raise AssertionError(f'FakeTenant.request: unhandled {method} {path}')

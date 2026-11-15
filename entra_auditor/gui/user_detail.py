@@ -1,4 +1,4 @@
-"""Property tabs for the selected user: General, Groups, Sign-in methods, Certificate IDs, Roles,
+"""Property tabs for the selected user: General, Groups, Licences, Sign-in methods, Certificate IDs, Roles,
 Who can manage.
 
 One profile load feeds every tab (no extra requests per tab). A part of the profile that couldn't be read
@@ -8,6 +8,7 @@ The profile loads on a worker after the selection settles (a short delay, so arr
 doesn't fire a burst of Graph requests). A response for a user who is no longer selected is dropped.
 
 "Who can manage" needs some twenty extra requests, so it loads lazily: only when its tab is looked at.
+"Licences" loads the same way (it reads the tenant's subscriptions, which must be fresh to show what is free).
 """
 
 from __future__ import annotations
@@ -17,10 +18,16 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
+    QPushButton,
     QScrollArea,
     QStackedWidget,
     QTabWidget,
@@ -28,6 +35,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..toolkit.actions import PlanError, plan_change_licences
+from ..toolkit.licences import LicenceReport, load_user_licences
 from ..toolkit.managers import ManagerReport, who_can_manage
 from ..toolkit.models import UserProfile, UserSummary
 from ..toolkit.profile import load_user_profile
@@ -227,6 +236,175 @@ class ManagersTab(QWidget):
         return [tuple(self.list.item(i).data(Qt.ItemDataRole.UserRole)) for i in range(self.list.count())]
 
 
+class LicenceDialog(QDialog):
+    """Tick the licences the user should hold directly. Inherited ones are shown but can't be unticked here."""
+
+    def __init__(self, report: LicenceReport, user_label: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.report = report
+        self.setWindowTitle(f"Licences: {user_label}")
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        intro = QLabel("Tick the licences this user should have. Licences that come from a group are "
+                       "managed through that group.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        self.list = QListWidget()
+        held = {lic.sku_id: lic for lic in report.licences or []}
+        for sku in report.skus or []:
+            licence = held.get(sku.sku_id)
+            direct = bool(licence and licence.direct)
+            text = f"{sku.name}  -  {sku.usage}"
+            if licence and licence.groups:
+                text += f"  (inherited from {', '.join(licence.groups)})"
+            if not sku.assignable:
+                text += f"  [{sku.status or 'not assignable'}]"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, sku)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if direct else Qt.CheckState.Unchecked)
+            if not direct and (not sku.assignable or sku.available == 0):
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)     # nothing left to give
+            self.list.addItem(item)
+        layout.addWidget(self.list)
+        form = QFormLayout()
+        self.location = QLineEdit(report.usage_location or "")
+        self.location.setMaxLength(2)
+        self.location.setPlaceholderText("two-letter country code, e.g. US")
+        self.location.setEnabled(not report.usage_location)
+        form.addRow("Usage location", self.location)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setText("Preview change...")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def set_checked(self, text: str, checked: bool) -> None:
+        """Tick or untick the product whose line contains ``text`` (tests and keyboard users)."""
+        for row in range(self.list.count()):
+            if text in self.list.item(row).text():
+                self.list.item(row).setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+
+    def changes(self) -> tuple[list[Any], list[Any]]:
+        """(subscriptions to add, subscriptions to remove) compared with what is held directly now."""
+        direct = {lic.sku_id for lic in self.report.licences or [] if lic.direct}
+        add, remove = [], []
+        for row in range(self.list.count()):
+            item = self.list.item(row)
+            sku, ticked = item.data(Qt.ItemDataRole.UserRole), item.checkState() == Qt.CheckState.Checked
+            if ticked and sku.sku_id not in direct:
+                add.append(sku)
+            elif not ticked and sku.sku_id in direct:
+                remove.append(sku)
+        return add, remove
+
+
+class LicencesTab(QWidget):
+    """The user's licences and where each comes from; "Change licences..." builds a plan and hands it to
+    ``on_plan`` (the window runs it through the change flow). Loads when the tab is shown."""
+
+    PROMPT = "Open this tab to see the user's licences."
+
+    def __init__(self, runner: TaskRunner, graph_source: Callable[[], Any], parent: Optional[QWidget] = None, *,
+                 loader: Callable[[Any, str], LicenceReport] = load_user_licences) -> None:
+        super().__init__(parent)
+        self.runner = runner
+        self._graph_source = graph_source
+        self._loader = loader
+        self.user: Optional[UserSummary] = None
+        self.report: Optional[LicenceReport] = None
+        self.on_plan: Optional[Callable[[Any, UserSummary], None]] = None
+        self.dialog: Optional[LicenceDialog] = None
+        self._generation = 0
+        self._requested = False
+
+        layout = QVBoxLayout(self)
+        self.summary = _value_label()
+        layout.addWidget(self.summary)
+        self.list = QListWidget()
+        self.list.setWordWrap(True)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self.list, 1)
+        bar = QHBoxLayout()
+        self.change_button = QPushButton("Change licences...")
+        self.change_button.clicked.connect(self.change_licences)
+        bar.addWidget(self.change_button)
+        bar.addStretch()
+        layout.addLayout(bar)
+        self.set_user(None)
+
+    def set_user(self, user: Optional[UserSummary]) -> None:
+        self._generation += 1
+        self.user, self.report, self._requested = user, None, False
+        self.list.clear()
+        self.summary.setText(self.PROMPT if user else "")
+        self.change_button.setEnabled(False)
+
+    def ensure_loaded(self) -> None:
+        if self.user is None or self._requested:
+            return
+        self._requested = True
+        generation, user_id, graph = self._generation, self.user.id, self._graph_source()
+        self.summary.setText("Loading licences...")
+        self.runner.submit(lambda: self._loader(graph, user_id),
+                           lambda report: self._loaded(generation, report),
+                           lambda exc: self._failed(generation, exc))
+
+    def _loaded(self, generation: int, report: LicenceReport) -> None:
+        if generation != self._generation:
+            return
+        self.report = report
+        self.list.clear()
+        if report.licences is None:
+            self.list.addItem(UNREADABLE)
+        elif not report.licences:
+            self.list.addItem("no licences")
+        else:
+            self.list.addItems([lic.label for lic in report.licences])
+        lines = [f"Usage location: {report.usage_location or 'not set (needed before a licence can be assigned)'}"]
+        self.summary.setText("\n".join(lines + [f"! {w}" for w in report.warnings]))
+        # changing needs both lists: what the tenant has, and what the user holds
+        self.change_button.setEnabled(report.licences is not None and bool(report.skus))
+        self.change_button.setToolTip("" if self.change_button.isEnabled() else
+                                      "The tenant's subscriptions or the user's licences couldn't be read.")
+
+    def _failed(self, generation: int, exc: BaseException) -> None:
+        if generation != self._generation:
+            return
+        self._requested = False
+        self.summary.setText(f"Could not load the licences: {exc}")
+
+    def texts(self) -> list[str]:
+        return [self.list.item(i).text() for i in range(self.list.count())]
+
+    def change_licences(self) -> None:
+        if self.report is None or self.user is None or self.report.licences is None:
+            return
+        report, user = self.report, self.user
+        dialog = LicenceDialog(report, user.full_label, self)
+        self.dialog = dialog
+
+        def answered(code: int) -> None:
+            self.dialog = None
+            if code != QDialog.DialogCode.Accepted:
+                return
+            add, remove = dialog.changes()
+            try:
+                plan = plan_change_licences(user, add, remove, current=report.licences or [],
+                                            usage_location=report.usage_location,
+                                            set_usage_location=dialog.location.text())
+            except PlanError as exc:
+                QMessageBox.information(self, "Nothing to do", str(exc))
+                return
+            if self.on_plan is not None:
+                self.on_plan(plan, user)
+
+        dialog.finished.connect(answered)
+        dialog.open()
+
+
 class UserDetail(QWidget):
     """Placeholder text, or the tabs for one user."""
 
@@ -254,10 +432,12 @@ class UserDetail(QWidget):
         for widget in self.groups_tab.lists.values():
             widget.setToolTip("Double-click a group to open it on the Groups page.")
             widget.itemDoubleClicked.connect(self._open_ref)
+        self.licences_tab = LicencesTab(runner, graph_source)
         self.methods_tab = ListTab(("Sign-in methods",))
         self.certs_tab = ListTab(("Certificate user IDs",))
         self.roles_tab = ListTab(("Active roles", "Eligible roles (PIM)"))
         self.tabs.addTab(self.groups_tab, "Groups")
+        self.tabs.addTab(self.licences_tab, "Licences")
         self.tabs.addTab(self.methods_tab, "Sign-in methods")
         self.tabs.addTab(self.certs_tab, "Certificate IDs")
         self.tabs.addTab(self.roles_tab, "Roles")
@@ -283,6 +463,7 @@ class UserDetail(QWidget):
         self._generation += 1
         self.user, self.profile = user, None
         self.managers_tab.set_user(None)
+        self.licences_tab.set_user(None)
         if user is None:
             self._timer.stop()
             self._pending = False
@@ -324,6 +505,7 @@ class UserDetail(QWidget):
         self.roles_tab.show_items("Active roles", profile.roles_active, "none")
         self.roles_tab.show_items("Eligible roles (PIM)", profile.roles_eligible, "none")
         self.managers_tab.set_user(profile.id)
+        self.licences_tab.set_user(self.user)
         self.stack.setCurrentWidget(self.tabs)
         self._tab_changed()
 
@@ -333,8 +515,11 @@ class UserDetail(QWidget):
             self.group_opened.emit(ref.id)
 
     def _tab_changed(self, _index: int = 0) -> None:
-        if self.tabs.currentWidget() is self.managers_tab and self.stack.currentWidget() is self.tabs:
-            self.managers_tab.ensure_loaded()
+        if self.stack.currentWidget() is not self.tabs:
+            return
+        current = self.tabs.currentWidget()
+        if current is self.managers_tab or current is self.licences_tab:
+            current.ensure_loaded()
 
     def _failed(self, generation: int, exc: BaseException) -> None:
         if generation != self._generation:

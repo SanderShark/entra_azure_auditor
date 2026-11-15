@@ -44,12 +44,13 @@ entra_auditor/
                        directory (load all users/groups once for local filtering),
                        group_pim (PIM for Groups), admin_units (AU reads; AU plans live in actions),
                        managers (read-only "who can manage this user": Microsoft's role tables as data),
-                       groups (members/owners/memberOf of one group, for the Groups page)
+                       groups (members/owners/memberOf of one group, for the Groups page),
+                       licences (subscriptions, a user's licences and their source; plan in actions)
   gui/                 PySide6 desktop app (`auditor gui`, optional extra `.[gui]`): tasks (thread pool ->
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, groups_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~835 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~850 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -121,7 +122,8 @@ browser through `gui/session.py`) and its directory load at scale, **PIM for Gro
 the Roles / PIM page and group candidates in the elevation flow), **administrative units** (`toolkit/admin_units.py`,
 the AU plans in `actions.py`, the AU page; in particular whether `$filter=directoryScopeId eq '/administrativeUnits/..'`
 works on roleAssignments/roleEligibilitySchedules, which has a scopedRoleMembers fallback), **unit-scoped PIM
-roles in the elevation flow** and the **"Who can manage" tab** (`toolkit/managers.py`: that role assignments
+roles in the elevation flow**, **licences** (`toolkit/licences.py`, `plan_change_licences`: the
+`licenseAssignmentStates` shape, `assignLicense`), and the **"Who can manage" tab** (`toolkit/managers.py`: that role assignments
 can be listed with `$filter=roleDefinitionId eq ..&$expand=principal`, also on roleEligibilitySchedules, that
 `memberOf`/`ownedObjects` return `isAssignableToRole` and unit type; its rules come from Microsoft's docs
 tables and must be re-checked when those change) (that `memberOf` lists the target's administrative units with `@odata.type`, and

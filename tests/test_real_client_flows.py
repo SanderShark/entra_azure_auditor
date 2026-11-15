@@ -145,3 +145,25 @@ def test_looking_up_a_targets_administrative_units_is_a_plain_memberof_read():
     assert admin_units_of(client_for(handler), "group", "g1") == {"au1": "Seattle"}
     assert [(m, p) for m, p, _q, _h in seen] == [("GET", "/v1.0/users/u1/memberOf"), ("GET", "/v1.0/groups/g1/memberOf")]
     assert seen[0][2]["$select"] == "id,displayName" and seen[0][3] is None   # no cast: no advanced query needed
+
+
+def test_a_licence_change_is_one_documented_post(tmp_path):
+    from entra_auditor.toolkit.licences import Sku, UserLicence, load_user_licences
+    seen, handler = recorder({
+        "/v1.0/subscribedSkus": httpx.Response(200, json={"value": [
+            {"skuId": "s-e3", "skuPartNumber": "SPE_E3", "prepaidUnits": {"enabled": 5}, "consumedUnits": 2,
+             "capabilityStatus": "Enabled", "appliesTo": "User"}]}),
+        "/v1.0/users/u1": httpx.Response(200, json={"usageLocation": "US", "assignedLicenses": [{"skuId": "s-old"}],
+                                                    "licenseAssignmentStates": [{"skuId": "s-old", "assignedByGroup": None,
+                                                                                 "state": "Active"}]}),
+        "/v1.0/users/u1/assignLicense": httpx.Response(200, json={"id": "u1"}),
+    })
+    client = client_for(handler)
+    report = load_user_licences(client, "u1")
+    assert report.skus[0].usage == "3 of 5 free" and report.licences[0].direct
+    plan = actions.plan_change_licences(USER, [Sku(sku_id="s-e3", part_number="SPE_E3", total=5, used=2)],
+                                        [UserLicence(sku_id="s-old", name="Old", direct=True)],
+                                        current=report.licences, usage_location=report.usage_location)
+    assert execute_plan(client, plan, log_path=tmp_path / "log.jsonl").status == "ok"
+    assert seen[-1] == ("POST", "/v1.0/users/u1/assignLicense",
+                        {"addLicenses": [{"skuId": "s-e3", "disabledPlans": []}], "removeLicenses": ["s-old"]})
