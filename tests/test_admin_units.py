@@ -52,9 +52,9 @@ def test_if_the_full_settings_are_rejected_names_still_load_with_a_warning():
 def test_members_are_users_then_groups_then_devices():
     members = list_members(tenant(), "au-sea")
     assert [(m.kind, m.label) for m in members] == [("user", "Alice Ng"), ("group", "Finance Share"),
-                                                    ("device", "dev-1")]
+                                                    ("device", "SEA-LT-001")]
     assert members[0].detail == "alice@contoso.com" and members[0].enabled is True
-    assert members[2].detail == "Windows"
+    assert members[2].detail == "Windows 10.0.26100"
 
 
 def test_scoped_roles_show_active_and_eligible_assignments_with_names():
@@ -183,3 +183,32 @@ def test_the_fake_rejects_what_the_plans_guard_against():
     with pytest.raises(GraphError):
         t.post("/directory/administrativeUnits/au-dyn/members/$ref",
                {"@odata.id": "https://graph.microsoft.com/v1.0/directoryObjects/u-bob"})
+
+
+def test_devices_load_with_os_and_join_type_and_keep_object_and_hardware_ids_apart():
+    from entra_auditor.toolkit.directory import DEVICE_SELECT, load_devices
+
+    graph = FakeTenant()
+    devices = load_devices(graph)
+    assert [d.label for d in devices] == ["OLD-PC", "Pixel 8", "SEA-LT-001"]
+    old, pixel, laptop = devices
+    assert laptop.id == "dev-1" and laptop.device_id == "hw-1111"
+    assert laptop.os_label == "Windows 10.0.26100" and laptop.join_type == "Entra joined"
+    assert pixel.join_type == "registered" and old.join_type == "hybrid joined" and old.account_enabled is False
+    assert "deviceId" in DEVICE_SELECT
+
+
+def test_a_device_is_added_by_its_object_id_not_its_hardware_id():
+    from entra_auditor.toolkit.admin_units import member_from_device
+    from entra_auditor.toolkit.directory import load_devices
+
+    laptop = next(d for d in load_devices(FakeTenant()) if d.id == "dev-1")
+    plan = actions.plan_add_au_members(SEATTLE, [member_from_device(laptop)], "https://graph.microsoft.com/v1.0")
+    assert plan.requests[0].json == {"@odata.id": "https://graph.microsoft.com/v1.0/directoryObjects/dev-1"}
+    assert "hw-1111" not in str(plan.requests[0].json)
+    assert plan.details == ["+ device: SEA-LT-001"]
+
+
+def test_restricted_units_accept_devices():
+    device = AuMember(id="dev-1", kind="device", name="SEA-LT-001")
+    assert actions.plan_add_au_members(RESTRICTED, [device]).requests

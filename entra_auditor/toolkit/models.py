@@ -138,3 +138,29 @@ class UserProfile(BaseModel):
     @property
     def label(self) -> str:
         return self.upn or self.mail or self.display_name or self.id
+
+
+class DeviceSummary(BaseModel):
+    """A device object. ``id`` is the directory object id (what memberships and links use); ``device_id``
+    is the hardware/registration id shown in Intune. Don't mix them up."""
+    id: str
+    device_id: str | None = None
+    display_name: str | None = None
+    operating_system: str | None = None
+    os_version: str | None = None
+    account_enabled: bool | None = None
+    trust_type: str | None = None        # AzureAd (joined) | ServerAd (hybrid joined) | Workplace (registered)
+    last_sign_in: datetime | None = None
+
+    @property
+    def label(self) -> str:
+        return self.display_name or self.device_id or self.id
+
+    @property
+    def join_type(self) -> str:
+        return {"azuread": "Entra joined", "serverad": "hybrid joined", "workplace": "registered"}.get(
+            (self.trust_type or "").lower(), self.trust_type or "unknown join type")
+
+    @property
+    def os_label(self) -> str:
+        return " ".join(x for x in (self.operating_system, self.os_version) if x) or "unknown OS"

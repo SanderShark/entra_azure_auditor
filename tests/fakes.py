@@ -51,6 +51,15 @@ class FakeTenant:
         self.au_members = {}
         self.au_roles = []           # (au id, role name, principal id, 'active'|'eligible')
         self.au_scope_filter_supported = True
+        # device objects: id = directory object id, deviceId = hardware id (deliberately different)
+        self.devices = {
+            'dev-1': {'id': 'dev-1', 'deviceId': 'hw-1111', 'displayName': 'SEA-LT-001', 'operatingSystem': 'Windows',
+                      'operatingSystemVersion': '10.0.26100', 'accountEnabled': True, 'trustType': 'AzureAd'},
+            'dev-2': {'id': 'dev-2', 'deviceId': 'hw-2222', 'displayName': 'Pixel 8', 'operatingSystem': 'Android',
+                      'operatingSystemVersion': '15', 'accountEnabled': True, 'trustType': 'Workplace'},
+            'dev-3': {'id': 'dev-3', 'deviceId': 'hw-3333', 'displayName': 'OLD-PC', 'operatingSystem': 'Windows',
+                      'operatingSystemVersion': '10.0.19045', 'accountEnabled': False, 'trustType': 'ServerAd'},
+        }
 
     def add_pim_group(self, gid, name, roles=(), access='member', role_assignable=True):
         """A group you are eligible for (membership by default) that holds `roles`."""
@@ -72,6 +81,8 @@ class FakeTenant:
             return {**self.users[oid], '@odata.type': '#microsoft.graph.user'}
         if oid in self.groups:
             return {**self.groups[oid], '@odata.type': '#microsoft.graph.group'}
+        if oid in self.devices:
+            return {**self.devices[oid], '@odata.type': '#microsoft.graph.device'}
         return {'id': oid, '@odata.type': '#microsoft.graph.device', 'displayName': oid, 'operatingSystem': 'Windows',
                 'accountEnabled': True}
 
@@ -102,6 +113,9 @@ class FakeTenant:
             yield from self._groups(flt, params)
             return
         if path == '/servicePrincipals':
+            return
+        if path == '/devices':
+            yield from (dict(d) for d in self.devices.values())
             return
         if path == '/directory/administrativeUnits':
             for au in self.admin_units.values():

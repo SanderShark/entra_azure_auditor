@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from .models import GroupSummary, UserSummary
+from .models import DeviceSummary, GroupSummary, UserSummary
 from .search import GROUP_SELECT, USER_SELECT, _group, _user
 
 PAGE_SIZE = 999   # the largest page Graph allows for /users
@@ -48,3 +48,22 @@ def load_groups(graph: Any, *, page_size: int = PAGE_SIZE) -> list[GroupSummary]
     groups = [_group(raw) for raw in graph.get_paged("/groups", select=GROUP_SELECT, top=page_size)]
     groups.sort(key=lambda g: (g.label.casefold(), g.id))
     return groups
+
+
+DEVICE_SELECT = ["id", "deviceId", "displayName", "operatingSystem", "operatingSystemVersion", "accountEnabled",
+                 "trustType", "approximateLastSignInDateTime"]
+
+
+def _device(raw: dict[str, Any]) -> DeviceSummary:
+    return DeviceSummary(
+        id=raw["id"], device_id=raw.get("deviceId"), display_name=raw.get("displayName"),
+        operating_system=raw.get("operatingSystem"), os_version=raw.get("operatingSystemVersion"),
+        account_enabled=raw.get("accountEnabled"), trust_type=raw.get("trustType"),
+        last_sign_in=raw.get("approximateLastSignInDateTime"))
+
+
+def load_devices(graph: Any, *, page_size: int = PAGE_SIZE) -> list[DeviceSummary]:
+    """Every device object (Device.Read.All or Directory.Read.All), sorted by name. Raises on failure."""
+    devices = [_device(raw) for raw in graph.get_paged("/devices", select=DEVICE_SELECT, top=page_size)]
+    devices.sort(key=lambda d: (d.label.casefold(), d.id))
+    return devices

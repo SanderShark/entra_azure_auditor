@@ -211,7 +211,7 @@ So far:
 - **Users:** whole directory loaded once and filtered as you type; General, Groups, Sign-in methods,
   Certificate IDs and Roles tabs; enable/disable.
 - **Administrative units:** units on the left, members in the middle, settings and scoped roles on the right
-  (like OUs in ADUC, but AUs don't nest); add/remove users and groups, edit name, description and
+  (like OUs in ADUC, but AUs don't nest); add/remove users, groups and devices, edit name, description and
   dynamic membership.
 - **Roles / PIM:** your directory roles and PIM for Groups assignments, with activate/deactivate. When a
   change is denied, the app also offers PIM groups whose membership carries the needed role.

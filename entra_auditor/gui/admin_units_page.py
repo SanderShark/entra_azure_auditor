@@ -38,23 +38,23 @@ from PySide6.QtWidgets import (
 )
 
 from ..toolkit.actions import PlanError, plan_add_au_members, plan_remove_au_members, plan_update_admin_unit
-from ..toolkit.admin_units import AdminUnit, AuMember, AuRoles, list_admin_units, list_members, scoped_roles
-from ..toolkit.directory import load_groups
-from ..toolkit.models import GroupSummary, UserSummary
+from ..toolkit.admin_units import (
+    AdminUnit,
+    AuMember,
+    AuRoles,
+    list_admin_units,
+    list_members,
+    member_from_device,
+    member_from_group,
+    member_from_user,
+    scoped_roles,
+)
+from ..toolkit.directory import load_devices, load_groups
+from ..toolkit.models import DeviceSummary, GroupSummary
 from .pickers import PickerDialog
 
 UNREADABLE = "(could not be read)"
 KIND_LABEL = {"user": "User", "group": "Group", "device": "Device", "object": "Object"}
-
-
-def member_from_user(user: UserSummary) -> AuMember:
-    return AuMember(id=user.id, kind="user", name=user.display_name, detail=user.upn, enabled=user.account_enabled)
-
-
-def member_from_group(group: GroupSummary) -> AuMember:
-    return AuMember(id=group.id, kind="group", name=group.display_name, detail=group.mail,
-                    security_enabled=group.security_enabled, mail_enabled=group.mail_enabled,
-                    unified="Unified" in group.group_types, synced=group.on_prem_synced)
 
 
 def load_unit_contents(graph: Any, unit_id: str) -> tuple[Optional[list[AuMember]], Optional[str], AuRoles]:
@@ -144,6 +144,7 @@ class AdminUnitsPage(QWidget):
         self._generation = 0
         self.dialog: Optional[QDialog] = None
         self._groups: Optional[list[GroupSummary]] = None
+        self._devices: Optional[list[DeviceSummary]] = None
 
         # -- left: units ------------------------------------------------------------------------ #
         left = QWidget()
@@ -166,9 +167,11 @@ class AdminUnitsPage(QWidget):
         bar = QHBoxLayout()
         self.add_users_button = QPushButton("Add users...")
         self.add_groups_button = QPushButton("Add groups...")
+        self.add_devices_button = QPushButton("Add devices...")
         self.remove_button = QPushButton("Remove")
         self.edit_button = QPushButton("Settings...")
-        for button in (self.add_users_button, self.add_groups_button, self.remove_button, self.edit_button):
+        for button in (self.add_users_button, self.add_groups_button, self.add_devices_button, self.remove_button,
+                       self.edit_button):
             bar.addWidget(button)
         bar.addStretch()
         middle_layout.addLayout(bar)
@@ -233,6 +236,7 @@ class AdminUnitsPage(QWidget):
         self.member_table.cellDoubleClicked.connect(self._open_member)
         self.add_users_button.clicked.connect(self.add_users)
         self.add_groups_button.clicked.connect(self.add_groups)
+        self.add_devices_button.clicked.connect(self.add_devices)
         self.remove_button.clicked.connect(self.remove_selected)
         self.edit_button.clicked.connect(self.edit_settings)
         self._show_unit(None)
@@ -409,7 +413,7 @@ class AdminUnitsPage(QWidget):
     def _update_buttons(self) -> None:
         unit, idle = self.unit, self.window.change is None and not self.loading_contents
         manual = bool(unit and not unit.is_dynamic and self.members is not None and idle)
-        for button in (self.add_users_button, self.add_groups_button):
+        for button in (self.add_users_button, self.add_groups_button, self.add_devices_button):
             button.setEnabled(manual)
             button.setToolTip("Dynamic units take their members from the rule." if unit and unit.is_dynamic else "")
         self.remove_button.setEnabled(manual and bool(self.selected_members()))
@@ -487,6 +491,33 @@ class AdminUnitsPage(QWidget):
         self._pick(f"Add groups to {unit.label}", [(f"{g.label} ({g.kind_label})", g) for g in groups],
                    lambda chosen: self._start(lambda: plan_add_au_members(
                        unit, [member_from_group(g) for g in chosen], base)))
+
+    def add_devices(self) -> None:
+        if not self.unit or self.members is None:
+            return
+        if self._devices is None:
+            self.add_devices_button.setEnabled(False)
+            self.member_status.setText("Loading devices...")
+            graph = self.window.session.graph
+
+            def loaded(devices: list[DeviceSummary]) -> None:
+                self._devices = devices
+                self._filter_members(self.member_filter.text())
+                self._update_buttons()
+                self.add_devices()
+
+            self.window.runner.submit(lambda: load_devices(graph), loaded,
+                                      lambda exc: (self.member_status.setText(f"Couldn't load devices: {exc}"),
+                                                   self._update_buttons()))
+            return
+        present = {m.id for m in self.members}
+        unit, base = self.unit, self.window.session.graph.base_url
+        devices = [d for d in self._devices if d.id not in present]
+        items = [(f"{d.label}  -  {d.os_label}, {d.join_type}" + ("" if d.account_enabled is not False else ", disabled"),
+                  d) for d in devices]
+        self._pick(f"Add devices to {unit.label}", items,
+                   lambda chosen: self._start(lambda: plan_add_au_members(
+                       unit, [member_from_device(d) for d in chosen], base)))
 
     def remove_selected(self) -> None:
         chosen = self.selected_members()

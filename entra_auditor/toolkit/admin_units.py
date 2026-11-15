@@ -25,6 +25,7 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 from ..graph.client import GraphAuthError, GraphError, GraphRetryExhaustedError
+from .models import DeviceSummary, GroupSummary, UserSummary
 from .odata import literal, segment
 
 AU_PATH = "/directory/administrativeUnits"
@@ -32,7 +33,8 @@ AU_SELECT = ["id", "displayName", "description", "membershipType", "membershipRu
              "membershipRuleProcessingState", "isMemberManagementRestricted", "visibility"]
 AU_BASIC_SELECT = ["id", "displayName", "description"]
 MEMBER_SELECT = ["id", "displayName", "userPrincipalName", "mail", "accountEnabled", "groupTypes",
-                 "mailEnabled", "securityEnabled", "onPremisesSyncEnabled", "operatingSystem"]
+                 "mailEnabled", "securityEnabled", "onPremisesSyncEnabled", "operatingSystem",
+                 "operatingSystemVersion", "trustType"]
 PRINCIPAL_SELECT = ["id", "displayName", "userPrincipalName"]
 
 
@@ -100,6 +102,22 @@ class AuRoles(BaseModel):
     warnings: list[str] = []
 
 
+def member_from_user(user: UserSummary) -> AuMember:
+    return AuMember(id=user.id, kind="user", name=user.display_name, detail=user.upn, enabled=user.account_enabled)
+
+
+def member_from_group(group: GroupSummary) -> AuMember:
+    return AuMember(id=group.id, kind="group", name=group.display_name, detail=group.mail,
+                    security_enabled=group.security_enabled, mail_enabled=group.mail_enabled,
+                    unified="Unified" in group.group_types, synced=group.on_prem_synced)
+
+
+def member_from_device(device: DeviceSummary) -> AuMember:
+    # the directory OBJECT id: an AU membership link to the hardware deviceId would point at nothing
+    return AuMember(id=device.id, kind="device", name=device.display_name, detail=device.os_label,
+                    enabled=device.account_enabled)
+
+
 def _unit(raw: dict[str, Any]) -> AdminUnit:
     return AdminUnit(
         id=raw["id"], display_name=raw.get("displayName"), description=raw.get("description"),
@@ -117,7 +135,8 @@ def _kind(raw: dict[str, Any]) -> str:
 def _member(raw: dict[str, Any]) -> AuMember:
     kind = _kind(raw)
     detail = (raw.get("userPrincipalName") if kind == "user" else
-              raw.get("operatingSystem") if kind == "device" else raw.get("mail"))
+              " ".join(x for x in (raw.get("operatingSystem"), raw.get("operatingSystemVersion")) if x) or None
+              if kind == "device" else raw.get("mail"))
     return AuMember(
         id=raw["id"], kind=kind, name=raw.get("displayName"), detail=detail,
         enabled=raw.get("accountEnabled") if kind in ("user", "device") else None,

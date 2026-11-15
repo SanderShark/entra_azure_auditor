@@ -78,7 +78,7 @@ def test_units_load_when_the_page_is_first_opened(qtbot, window):
 
 def test_selecting_a_unit_shows_its_members_settings_and_roles(qtbot, window):
     page = open_units(qtbot, window(au_tenant()))
-    assert page.member_names() == ["Alice Ng", "Finance Share", "dev-1"]
+    assert page.member_names() == ["Alice Ng", "Finance Share", "SEA-LT-001"]
     assert page.member_status.text() == "1 user, 1 group, 1 device"
     assert page.props["Description"].text() == "Seattle office" and page.props["Membership"].text() == "assigned"
     assert page.roles_texts() == [("User Administrator", "Bob Stone (bob@contoso.com)", "active"),
@@ -159,7 +159,7 @@ def test_removing_a_member(qtbot, window):
     tenant.active_roles["r"] = "Privileged Role Administrator"
     win = window(tenant)
     page = open_units(qtbot, win)
-    page.member_table.selectRow(2)                               # dev-1
+    page.member_table.selectRow(2)                               # SEA-LT-001 (object id dev-1)
     page.remove_button.click()
     ctrl = win.change
     plan = wait_for(qtbot, ctrl, PlanDialog)
@@ -167,6 +167,28 @@ def test_removing_a_member(qtbot, window):
     plan.apply_button.click()
     wait_for(qtbot, ctrl, ResultDialog).accept()
     qtbot.waitUntil(lambda: page.member_names() == ["Alice Ng", "Finance Share"])
+
+
+def test_adding_devices_lists_os_and_join_type_and_sends_object_ids(qtbot, window):
+    tenant = au_tenant()
+    tenant.active_roles["r"] = "Privileged Role Administrator"
+    win = window(tenant)
+    page = open_units(qtbot, win)
+    page.add_devices_button.click()
+    picker = wait_for(qtbot, page, PickerDialog)
+    texts = [picker.list.item(i).text() for i in range(picker.list.count())]
+    assert texts == ["OLD-PC  -  Windows 10.0.19045, hybrid joined, disabled", "Pixel 8  -  Android 15, registered"]
+    picker.filter_edit.setText("android")
+    picker.select_texts("Pixel 8")
+    picker.ok_button.click()
+    ctrl = win.change
+    plan = wait_for(qtbot, ctrl, PlanDialog)
+    assert "directoryObjects/dev-2" in plan.requests.item(0, 2).text()
+    plan.apply_button.click()
+    wait_for(qtbot, ctrl, ResultDialog).accept()
+    assert "dev-2" in tenant.au_members["au-sea"]
+    qtbot.waitUntil(lambda: "Pixel 8" in page.member_names())
+    assert sum(1 for c in tenant.calls if c == ("GET", "/devices")) == 1
 
 
 def test_editing_settings_sends_only_the_change(qtbot, window):
