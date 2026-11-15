@@ -212,6 +212,10 @@ registration needs **Allow public client flows** for device code, and the `http:
 So far:
 - **Users:** whole directory loaded once and filtered as you type; General, Groups, Sign-in methods,
   Certificate IDs and Roles tabs; enable/disable.
+- **Offboard...** (toolbar, Users page): the leaver workflow as one previewed change: disable, sign out
+  everywhere, reset the password, remove direct licences, group memberships, optionally ownerships, and
+  administrative units. It lists what it leaves alone (admin roles, dynamic/synced/Exchange groups, the
+  mailbox), keeps going when a step is refused, and reports step by step what was and wasn't done.
 - **Licences** (a tab on each user): what they hold and whether each licence is direct or inherited from a
   group; assign and remove direct licences from a tick list showing what is free, setting the usage location
   in the same change when it is missing.

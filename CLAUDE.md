@@ -45,18 +45,19 @@ entra_auditor/
                        group_pim (PIM for Groups), admin_units (AU reads; AU plans live in actions),
                        managers (read-only "who can manage this user": Microsoft's role tables as data),
                        groups (members/owners/memberOf of one group, for the Groups page),
-                       licences (subscriptions, a user's licences and their source; plan in actions)
+                       licences (subscriptions, a user's licences and their source; plan in actions),
+                       leaver (offboarding: gather facts, then ONE pure multi-step plan, `plan_leaver`)
   gui/                 PySide6 desktop app (`auditor gui`, optional extra `.[gui]`): tasks (thread pool ->
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
-                       pickers, groups_page, admin_units_page, roles_page, main_window (nav | page stack), app
+                       pickers, leaver (offboarding dialog), groups_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~850 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~865 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
 ## Rules that must not be broken
 
-1. **Changes only through the plan pipeline.** Build a plan (`toolkit/actions.py plan_*`, pure), then drive
+1. **Changes only through the plan pipeline.** Build a plan (`toolkit/actions.py plan_*`, or `leaver.plan_leaver`; pure), then drive
    `toolkit/flow.py ChangeFlow` (confirm -> execute -> PIM elevation -> retry). UI code never calls
    `graph.post/patch/delete` or `execute_plan` directly. `--dry-run` sends nothing.
 2. **Secrets.** A password is shown to the operator once and is never logged, saved or put in a plan's
@@ -106,6 +107,9 @@ tests/                 ~850 tests, no network; fakes.py, builders.py, conftest.p
   same name. A role is `(id, scope)`: use `pim.scope_applies` / `PimService.match(..., target_scopes)`; the flow
   looks up the target's units (`admin_units.admin_units_of`) only when a scoped role is in play. A unit-scoped
   role manages the unit's members, never the unit itself.
+- `execute_plan` stops at the first failed request unless the plan sets `continue_on_error` (offboarding):
+  then each failed step is reported ("NOT PERMITTED"/"FAILED") and the rest run; a refusal of the FIRST step
+  is still "denied" so PIM elevation is offered. Order steps that need a higher role last.
 - The property pane is narrow: a five-column table there hid its most important column behind a scrollbar
   (seen only in a screenshot). Use wrapped list entries in detail tabs.
 - Qt makes a dialog's first accept button the default on show: the change preview forced Cancel back as the
@@ -123,7 +127,7 @@ the Roles / PIM page and group candidates in the elevation flow), **administrati
 the AU plans in `actions.py`, the AU page; in particular whether `$filter=directoryScopeId eq '/administrativeUnits/..'`
 works on roleAssignments/roleEligibilitySchedules, which has a scopedRoleMembers fallback), **unit-scoped PIM
 roles in the elevation flow**, **licences** (`toolkit/licences.py`, `plan_change_licences`: the
-`licenseAssignmentStates` shape, `assignLicense`), and the **"Who can manage" tab** (`toolkit/managers.py`: that role assignments
+`licenseAssignmentStates` shape, `assignLicense`), the **offboarding workflow** (`toolkit/leaver.py`), and the **"Who can manage" tab** (`toolkit/managers.py`: that role assignments
 can be listed with `$filter=roleDefinitionId eq ..&$expand=principal`, also on roleEligibilitySchedules, that
 `memberOf`/`ownedObjects` return `isAssignableToRole` and unit type; its rules come from Microsoft's docs
 tables and must be re-checked when those change) (that `memberOf` lists the target's administrative units with `@odata.type`, and

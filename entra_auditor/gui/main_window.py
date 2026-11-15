@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
+    QDialog,
     QAbstractItemView,
     QHeaderView,
     QLabel,
@@ -32,12 +33,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..toolkit.actions import PlanError, plan_set_enabled
+from ..toolkit.leaver import LeaverFacts, gather_leaver_facts, plan_leaver
 from ..toolkit.directory import LoadCancelled, load_users
 from ..toolkit.models import UserSummary
 from ..toolkit.search import get_user
 from .admin_units_page import AdminUnitsPage
 from .change import ChangeController
 from .groups_page import GroupsPage
+from .leaver import LeaverDialog
 from .roles_page import RolesPage
 from .session import GuiSession
 from .tasks import TaskRunner
@@ -152,6 +155,14 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.refresh_action)
         toolbar.addSeparator()
         toolbar.addAction(self.toggle_action)
+        self.offboard_action = QAction("Offboard...", self)
+        self.offboard_action.setToolTip("Leaver workflow: disable, sign out, reset password, remove licences, "
+                                        "groups and administrative units, in one previewed change.")
+        self.offboard_action.setEnabled(False)
+        self.offboard_action.triggered.connect(self.offboard_selected)
+        toolbar.addAction(self.offboard_action)
+        self.dialog: Optional[QDialog] = None
+        self._gathering = False
         self.addToolBar(toolbar)
 
         self.identity_label = QLabel(f"{session.identity.removeprefix('user:')}  |  {session.tenant.name}")
@@ -190,6 +201,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(page)
         on_users = page is self.users_page
         self.toggle_action.setVisible(on_users)
+        self.offboard_action.setVisible(on_users)
         self.refresh_action.setText("Reload directory" if on_users else "Reload")
         self.refresh_action.setEnabled(not self.loading if on_users else True)
         activate = getattr(page, "activate_page", None)
@@ -309,6 +321,7 @@ class MainWindow(QMainWindow):
             self.detail.show_user(user)
 
     def _update_actions(self, user: Optional[UserSummary]) -> None:
+        self.offboard_action.setEnabled(user is not None and self.change is None and not self._gathering)
         if user is None or user.account_enabled is None:
             self.toggle_action.setText("Disable account")
             self.toggle_action.setEnabled(False)
@@ -321,6 +334,7 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         menu.addAction(self.toggle_action)
+        menu.addAction(self.offboard_action)
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     # -- changes --------------------------------------------------------------------------- #
@@ -336,6 +350,46 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Nothing to change", str(exc))
             return
         self.start_change(plan, user)
+
+    @Slot()
+    def offboard_selected(self) -> None:
+        """Gather what the user has (on a worker), then ask what should happen to it."""
+        user = self.selected_user()
+        if user is None or self.change is not None or self._gathering:
+            return
+        self._gathering = True
+        self._update_actions(user)
+        self.statusBar().showMessage(f"Reading what {user.label} has...")
+        graph = self.session.graph
+
+        def failed(exc: BaseException) -> None:
+            self._gathering = False
+            self._update_actions(self.selected_user())
+            self.statusBar().showMessage("Offboarding could not start.", 10_000)
+            QMessageBox.warning(self, "Could not start offboarding", f"Reading the user failed:\n\n{exc}")
+
+        self.runner.submit(lambda: gather_leaver_facts(graph, user.id), self._leaver_facts_ready, failed)
+
+    def _leaver_facts_ready(self, facts: LeaverFacts) -> None:
+        self._gathering = False
+        self.statusBar().clearMessage()
+        self._update_actions(self.selected_user())
+        dialog = LeaverDialog(facts, self)
+        self.dialog = dialog
+
+        def answered(code: int) -> None:
+            self.dialog = None
+            if code != QDialog.DialogCode.Accepted:
+                return
+            try:
+                plan = plan_leaver(facts, dialog.options())
+            except PlanError as exc:
+                QMessageBox.information(self, "Nothing to do", str(exc))
+                return
+            self.start_change(plan, facts.user)
+
+        dialog.finished.connect(answered)
+        dialog.open()
 
     def start_change(self, plan: Any, user: Optional[UserSummary] = None, *,
                      on_finished: Optional[Callable[[Any], None]] = None) -> Optional[ChangeController]:

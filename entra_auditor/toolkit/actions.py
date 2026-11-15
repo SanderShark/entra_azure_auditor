@@ -87,6 +87,9 @@ class ActionPlan:
     details: list[str] = field(default_factory=list)      # human-readable change lines
     warnings: list[str] = field(default_factory=list)
     suggested_roles: tuple[str, ...] = ()
+    # Multi-step workflows (offboarding): a step that fails is reported and the rest still run, instead of
+    # stopping at the first problem. A refusal of the very first step is still "denied" (so PIM is offered).
+    continue_on_error: bool = False
 
     def log_requests(self) -> list[dict[str, Any]]:
         return [{"method": r.method, "path": r.path, "json": r.redacted_json(), "what": r.description}
@@ -442,11 +445,16 @@ def execute_plan(
                             [f"would send: {r.description or r.path} ({r.method})" for r in plan.requests])
 
     result = ActionResult("ok")
-    done = 0
+    done = failed = 0
     for request in plan.requests:
         try:
             response = graph.request(request.method, request.path, json=request.json)
         except GraphPermissionError as exc:
+            if plan.continue_on_error and done > 0:
+                failed += 1
+                result.error = exc
+                result.lines.append(f"{request.description}: NOT PERMITTED ({exc})")
+                continue
             result.status, result.error = ("denied" if done == 0 else "partial"), exc
             result.message = f"Not permitted: {exc}"
             break
@@ -454,6 +462,11 @@ def execute_plan(
             if _already_applied(request, exc):
                 result.lines.append(f"{request.description}: already in that state")
                 done += 1
+                continue
+            if plan.continue_on_error:
+                failed += 1
+                result.error = exc
+                result.lines.append(f"{request.description}: FAILED ({exc})")
                 continue
             result.status, result.error = ("failed" if done == 0 else "partial"), exc
             result.message = f"{request.description} failed: {exc}"
@@ -468,13 +481,21 @@ def execute_plan(
             if response.location:
                 state, detail = _await_operation(graph, response.location, sleep=sleep,
                                                  timeout=poll_timeout, clock=clock)
-                if state == "failed":
+                if state == "failed" and plan.continue_on_error:
+                    done, failed = done - 1, failed + 1
+                    result.secrets.pop("password", None)
+                    result.lines[-1] = f"{request.description}: FAILED ({detail or 'no detail'})"
+                elif state == "failed":
                     result.status, result.message = "failed", f"Password reset failed: {detail or 'no detail'}"
                     break
                 if state == "timeout":
                     result.lines.append("Password reset is still running; check again shortly.")
     else:
         result.message = "Done."
+        if failed:
+            result.status = "partial" if done else "failed"
+            result.message = (f"{done} of {len(plan.requests)} steps done; {failed} could not be done "
+                              "(marked below).")
 
     if result.status == "ok" and plan.action == "user.reset_password" and "password" not in result.secrets:
         result.lines.append("Graph did not return the new password; if you didn't supply one, "

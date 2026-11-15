@@ -518,3 +518,90 @@ def test_licences_that_cannot_be_read_offer_no_changes(qtbot, window):
     tab = open_licences(qtbot, window(tenant), "u-alice")
     assert not tab.change_button.isEnabled() and "subscriptions couldn't be read" in tab.summary.text()
     assert tab.texts()[0].startswith("sku-e3")                  # still listed, by id
+
+
+# ---- offboarding ----------------------------------------------------------------------------------
+
+def leaver_tenant(**kw):
+    tenant = licence_tenant(**kw)
+    tenant.eligible_names.append("User Administrator")
+    tenant.role_ids["User Administrator"] = "r-user-administrator"
+    tenant.members.update({"g-fin": {"u-bob"}, "g-dyn": {"u-bob"}})
+    tenant.owners["g-fin"] = {"u-bob"}
+    tenant.add_admin_unit("au-sea", "Seattle", members=("u-bob",))
+    tenant.give_licence("u-bob", "sku-e3")
+    return tenant
+
+
+def open_offboarding(qtbot, win, user_id="u-bob"):
+    from entra_auditor.gui.leaver import LeaverDialog
+    win.select_user(user_id)
+    assert win.offboard_action.isEnabled()
+    win.offboard_action.trigger()
+    qtbot.waitUntil(lambda: isinstance(win.dialog, LeaverDialog))
+    return win.dialog
+
+
+def test_offboarding_shows_what_the_user_has_and_what_cannot_be_done(qtbot, window):
+    dialog = open_offboarding(qtbot, window(leaver_tenant()))
+    texts = {key: box.text() for key, box in dialog.boxes.items()}
+    assert texts["remove_licences"] == "Remove 1 direct licence"
+    assert texts["remove_groups"] == "Remove from 1 group (1 can't be changed here)"
+    assert texts["remove_units"].startswith("Remove from 1 administrative unit")
+    assert dialog.boxes["remove_ownerships"].isEnabled() and not dialog.boxes["remove_ownerships"].isChecked()
+    assert all(dialog.boxes[k].isChecked() for k in ("disable", "revoke_sessions", "reset_password", "remove_groups"))
+    dialog.cancel_button.click()
+
+
+def test_offboarding_runs_as_one_previewed_change_with_elevation(qtbot, window):
+    tenant = leaver_tenant()
+    win = window(tenant)
+    dialog = open_offboarding(qtbot, win)
+    dialog.boxes["reset_password"].setChecked(False)
+    dialog.ok_button.click()
+    qtbot.waitUntil(lambda: win.change is not None)
+    ctrl = win.change
+    assert [r.description for r in ctrl.flow.plan.requests] == [
+        "Disable account", "Revoke sign-in sessions", "Remove licences", "Remove from group Finance Share",
+        "Remove from administrative unit Seattle"]
+    assert tenant.writes == []                                    # nothing before the preview is confirmed
+    plan = wait_for(qtbot, ctrl, PlanDialog)
+    assert plan.cancel_button.isDefault()
+    plan.apply_button.click()
+    elevation = wait_for(qtbot, ctrl, ElevationDialog)
+    assert elevation.roles.item(0).text() == "User Administrator"
+    elevation.activate_button.click()
+    justification = wait_for(qtbot, ctrl, JustificationDialog)
+    qtbot.keyClicks(justification.text, "Leaver HR-77")
+    justification.ok_button.click()
+    result = wait_for(qtbot, ctrl, ResultDialog)
+    assert result.status_label.text().startswith("OK:")
+    result.accept()
+    assert tenant.users["u-bob"]["accountEnabled"] is False and tenant.members["g-fin"] == set()
+    assert "u-bob" not in tenant.licences or "sku-e3" not in tenant.licences["u-bob"]
+    assert "u-bob" not in tenant.au_members["au-sea"] and tenant.owners["g-fin"] == {"u-bob"}
+    qtbot.waitUntil(lambda: win.selected_user().account_enabled is False)       # the list was refreshed
+
+
+def test_offboarding_reports_the_steps_that_were_refused(qtbot, window):
+    tenant = leaver_tenant()
+    tenant.active_roles["r"] = "User Administrator"
+    tenant.refuse = [r"/administrativeUnits/"]
+    win = window(tenant)
+    open_offboarding(qtbot, win).ok_button.click()
+    qtbot.waitUntil(lambda: win.change is not None)
+    ctrl = win.change
+    wait_for(qtbot, ctrl, PlanDialog).apply_button.click()
+    result = wait_for(qtbot, ctrl, ResultDialog)
+    assert result.status_label.text().startswith("PARTIAL: 5 of 6 steps done; 1 could not be done")
+    assert result.password_label is not None                     # the new password is still shown once
+    result.accept()
+    assert tenant.users["u-bob"]["accountEnabled"] is False and "u-bob" in tenant.au_members["au-sea"]
+
+
+def test_cancelling_offboarding_sends_nothing(qtbot, window):
+    tenant = leaver_tenant()
+    win = window(tenant)
+    open_offboarding(qtbot, win).cancel_button.click()
+    qtbot.waitUntil(lambda: win.dialog is None)
+    assert win.change is None and tenant.writes == [] and win.offboard_action.isEnabled()

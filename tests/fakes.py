@@ -60,6 +60,8 @@ class FakeTenant:
         self.skus = {}
         self.licences = {}
         self.skus_denied = False
+        self.refuse = []                 # regexes: a write whose path matches answers 403 (needs a higher role)
+        self.break_paths = []            # regexes: a write whose path matches answers 500
         self.unreadable_groups = set()   # group ids whose members/owners answer 403
         self.memberof_denied = False # True: memberOf answers 403 (the target's AUs can't be read)
         # who holds which admin role (opt-in; see add_role_holder): (role, principal id, scope, 'active'|'eligible')
@@ -153,6 +155,7 @@ class FakeTenant:
         for au, members in self.au_members.items():
             if oid in members:
                 yield {'id': au, 'displayName': self.admin_units[au]['displayName'],
+                       'membershipType': self.admin_units[au].get('membershipType'),
                        '@odata.type': '#microsoft.graph.administrativeUnit'}
 
     def add_admin_unit(self, au_id, name, members=(), **props):
@@ -283,7 +286,7 @@ class FakeTenant:
             if kind == 'users' and edge == 'ownedObjects':
                 for gid, ms in self.owners.items():
                     if oid in ms:
-                        yield {'id': gid, 'displayName': self.groups[gid]['displayName'], '@odata.type': '#microsoft.graph.group'}
+                        yield {**self.groups[gid], '@odata.type': '#microsoft.graph.group'}
                 return
         if re.match('/users/([^/]+)/authentication/methods$', path):
             yield {'@odata.type': '#microsoft.graph.passwordAuthenticationMethod', 'id': 'pw'}
@@ -394,6 +397,10 @@ class FakeTenant:
         self.writes.append((method, path, json))
         target = re.match('/(?:users|groups)/([^/]+)', path)
         self._need_role(target.group(1) if target else None)
+        if any(re.search(pattern, path) for pattern in self.refuse):
+            raise GraphPermissionError('Authorization_RequestDenied: Insufficient privileges to complete the operation.', status_code=403, code='Authorization_RequestDenied')
+        if any(re.search(pattern, path) for pattern in self.break_paths):
+            raise GraphError('Service unavailable', status_code=500)
         m = re.match('/groups/([^/]+)/(members|owners)/\\$ref$', path)
         if m and method == 'POST':
             gid, edge = m.groups()
