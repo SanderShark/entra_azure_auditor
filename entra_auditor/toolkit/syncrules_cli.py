@@ -14,9 +14,10 @@ from . import syncrules as S
 sync_app = typer.Typer(help="Entra Connect sync rules (offline): describe, lint, explain, diff, impact.",
                        no_args_is_help=True, add_completion=False)
 
-RulesArg = Annotated[Path, typer.Argument(help="An export folder (Get-ADSyncServerConfiguration -Path) or a JSON file of rules.")]
-OuOpt = Annotated[Optional[list[str]], typer.Option("--excluded-ou", help="A distinguished name left out by OU filtering "
-                                                    "(repeatable). OU filtering is connector configuration, not a rule.")]
+RulesArg = Annotated[Path, typer.Argument(help="The folder written by Get-ADSyncServerConfiguration -Path (or one rule file).")]
+OuOpt = Annotated[Optional[list[str]], typer.Option("--excluded-ou", help="An extra distinguished name to treat as left out "
+                                                    "(repeatable). Container/OU filtering is normally read from the "
+                                                    "export's connector files.")]
 TypeOpt = Annotated[str, typer.Option("--type", help="Object type to evaluate (user, group, contact, ...).")]
 STYLE = {"error": "bold red", "warning": "yellow", "info": "dim"}
 
@@ -45,6 +46,10 @@ def describe(rules: RulesArg,
     for rule in shown:
         console.print(t(rule.describe()))
         console.print()
+    for containers in loaded.containers:
+        console.print(t(f"Containers: {containers.text}"))
+    if not loaded.containers:
+        console.print(t("Containers: none found in this export (no connector files), so OU filtering isn't checked."))
     console.print(t(f"{len(shown)} of {len(loaded.rules)} rules shown ({sum(1 for r in loaded.rules if not r.standard)} custom, "
                     f"{sum(1 for r in loaded.rules if r.cloud_filter)} set cloudFiltered)."))
 

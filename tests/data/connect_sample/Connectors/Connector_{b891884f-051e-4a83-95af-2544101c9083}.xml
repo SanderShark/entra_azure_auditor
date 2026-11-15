@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ma-data><format-version>1</format-version>
+  <id>{B891884F-051E-4A83-95AF-2544101C9083}</id>
+  <name>contoso.onmicrosoft.com - AAD</name>
+  <category>Extensible2</category>
+  <subtype>Windows Azure Active Directory (Microsoft)</subtype>
+  <ma-partition-data><partition><id>{2c25393a-36a8-495a-9f1a-7a9c03e6c1a1}</id><name>default</name><selected>1</selected><filter><object-classes><object-class>contact</object-class><object-class>device</object-class><object-class>group</object-class><object-class>user</object-class></object-classes><containers><exclusions /><inclusions><inclusion /></inclusions></containers></filter></partition></ma-partition-data></ma-data>

@@ -261,30 +261,44 @@ at sign-in, so a missing one only affects that page.
 ## Entra Connect sync rules (offline)
 
 `auditor sync` reads an export of your Entra Connect configuration and helps you understand and change the
-rules safely. It never signs in and never contacts the Connect server or a tenant: it only reads files.
+rules safely. It never signs in and never contacts the Connect server or a tenant: it only reads files on
+your own machine, so nothing proprietary has to leave it.
 
 ```powershell
-# on the Entra Connect server
+# on the Entra Connect server: writes a folder of XML (rules, connectors, global settings)
 Import-Module ADSync
 Get-ADSyncServerConfiguration -Path C:\Temp\connect-export
-# a population to test against (any AD attributes your rules use)
-Get-ADUser -Filter * -Properties extensionAttribute14 | Export-Csv users.csv -NoTypeInformation
+# a population to test against: include every AD attribute your rules look at
+Get-ADUser -Filter * -Properties sAMAccountName,mailNickname,extensionAttribute14 | Export-Csv users.csv -NoTypeInformation
 ```
 
 ```bash
-auditor sync describe connect-export --custom        # your own rules, in plain English
+auditor sync describe connect-export --custom        # your own rules, in plain English, and the OUs that are read
+auditor sync describe connect-export --filters       # every rule that can keep an object out of Entra ID
 auditor sync lint connect-export                     # duplicate precedence, a rule that filters everything, ...
-auditor sync explain connect-export --set extensionAttribute14=no0365sync
-auditor sync explain connect-export --csv users.csv --who jane@contoso.com --excluded-ou "OU=NoSync,DC=contoso,DC=com"
+auditor sync explain connect-export --csv users.csv --who jane@contoso.com
+auditor sync explain connect-export --set sAMAccountName=svc1 --set "distinguishedName=CN=svc1,OU=Staff,DC=contoso,DC=com"
 auditor sync diff connect-export connect-export-changed
 auditor sync impact connect-export connect-export-changed users.csv --max-changes 5
 ```
 
-`impact` is the validator: it runs both rule sets over the population and lists who would start or stop
+What it understands:
+- **Container (OU) filtering**, read from the export's connector files: an object is read only if the most
+  specific container that holds it is an included one.
+- **Rule scope**: any group of conditions, all conditions within a group.
+- **`cloudFiltered`**: inbound rules contribute in precedence order; a rule that yields nothing passes the
+  decision on. Microsoft's built-in rules decide this with expressions (`IIF(...)`), which are evaluated.
+
+`impact` is the validator: it runs both exports over the population and lists who would start or stop
 synchronising, and exits with 1 when that exceeds the limits (by default: any change at all) or when an object
-can't be judged. Limits of this first version: the export's JSON layout has not been confirmed against a real
-export, organisational-unit filtering must be given with `--excluded-ou` (it is connector configuration, not a
-rule), expressions such as `IIF(...)` are shown but not evaluated, and it does not write or edit rules.
+can't be judged. Anything not understood is reported as "can't tell", never guessed.
+
+The format and the built-in rules come from the sample export Microsoft publishes with its
+[AADConnectConfigDocumenter](https://github.com/microsoft/AADConnectConfigDocumenter) (a trimmed copy is the
+test data). Limits: it has not been run against a live Connect server; only filtering by container and by
+`cloudFiltered` is modelled (not the other conditions of the outbound rules, join rules or group-based
+filtering); a few expression functions are not implemented and give "can't tell"; it does not write or edit
+rules; Cloud Sync is not covered.
 
 ## Security notes
 

@@ -16,7 +16,7 @@ turns into a pile of patches.
 3. **Set up and run the checks** (the environment has no `python`; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 955 passed (the default addopts hide the summary)
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 998 passed (the default addopts hide the summary)
    .venv/bin/ruff check .                                               # clean
    ```
 4. Then: section 4 (what to build next) and section 3 (questions for the owner).
@@ -54,9 +54,8 @@ preview (exact requests; Cancel is the default) -> confirm -> on "forbidden" a P
 
 ## 3. Open questions and decisions for the owner
 
-- **Sync rules: a real export is needed** (see section 5). Ask for a redacted `Get-ADSyncServerConfiguration -Path`
-  folder (or `Get-ADSyncRule | ConvertTo-Json -Depth 10`), and a `Get-ADUser` CSV with `distinguishedName` and
-  `extensionAttribute14`.
+- **Sync rules:** the owner CANNOT export their configuration to us (proprietary). Don't ask for it; ask them to run
+  `auditor sync describe|lint` on their own export and report what looks wrong or says "can't tell" (section 5).
 - **Which load scope is "their 30k users"?** Tenant: ~30k users, 300k+ user objects (guests, cross-tenant sync).
   Default is still "all users"; `tenants.json` can set `user_scope` and `hide_external`. Hiding `#EXT#` is done while
   loading (Graph has no server-side `contains` on the UPN), so those pages are still downloaded. A server-side
@@ -72,7 +71,8 @@ preview (exact requests; Cancel is the default) -> confirm -> on "forbidden" a P
 Agreed order so far; items 1-5 of the EasyEntra list are done except the last:
 1. **Sign-in method management** (Temporary Access Pass, removing methods): NOT STARTED. Check the docs per method
    type first (each type has its own delete endpoint; TAP is a POST on `temporaryAccessPassMethods`).
-2. **Sync rules, next steps** (section 5): confirm the format against a real export; then a desktop page.
+2. **Sync rules, next steps** (section 5): the owner's feedback from running it on their own export; an attribute
+   list for the population CSV; proposing/validating a rule change; then a desktop page.
 3. **Scale follow-ups:** the Groups and Devices pages and the pickers still use `QTableWidget`/`QListWidget` and will
    be slow with tens of thousands of rows (give them the `UserFilterProxy` treatment); 300k `UserSummary` objects cost
    ~650 MB (slimmer rows would fix it).
@@ -93,31 +93,42 @@ access, a PowerShell module. Not matched here: on-prem AD and Exchange/mailbox m
 MFA management, saved templates. Ahead of it: PIM just-in-time elevation, a preview of every change, "who can
 manage", administrative units, the security audit, and now the sync-rule validator.
 
-## 5. Sync-rule tools (`auditor sync`, `toolkit/syncrules.py`): status
+## 5. Sync-rule tools (`auditor sync`; `toolkit/syncrules.py`, `syncexpr.py`, `syncrules_cli.py`): status
 
-The owner keeps objects out of Entra by a designated OU and by `extensionAttribute14 = "no0365sync"`, and wants to
-understand the rules, clean them up, and be sure a change "won't wildly change things" (a validator).
+The owner (Entra Connect Sync, plus a Cloud Sync connector) wants to understand the rules, clean them up, and be
+sure a change "won't wildly change things": a validator. It must be **agnostic** (nothing tied to their own
+convention of an excluded OU and `extensionAttribute14 = "no0365sync"`), and **they cannot hand over an export**
+(proprietary). So the tool is built and tested on Microsoft's published sample instead, and runs only on their own
+machine against their own files.
 
 Built (offline: reads files, never signs in):
-- `auditor sync describe <export>`: each rule in plain English (`--custom`, `--filters`).
-- `auditor sync lint <export>`: duplicate precedence, a rule that filters everything, unknown operators, custom
-  rules at precedence 100 or more, disabled rules. Exit code 1 on errors.
-- `auditor sync explain <export> --set attr=value ...` (or `--csv file --who upn`): why an object is or isn't
-  synchronised; `--excluded-ou` for OU filtering.
-- `auditor sync diff <old> <new>`: changes, those that can alter who is synchronised first.
-- `auditor sync impact <old> <new> <population.csv> [--max-changes N] [--max-percent P]`: who would start or stop
-  synchronising; exit code 1 when over the limit or when anything can't be judged. This is the validator.
+- Reader for the real format: the XML folder written by `Get-ADSyncServerConfiguration -Path`
+  (`SynchronizationRules/*.xml`, `Connectors/*.xml`). Connector GUIDs are resolved to names. JSON
+  (`Get-ADSyncRule | ConvertTo-Json`) is still accepted but its shape is unconfirmed.
+- Container (OU) filtering read from the connectors: per partition, included and excluded containers; the most
+  specific one wins (`ContainerFilter`).
+- `cloudFiltered` decided in precedence order, NULL passing to the next rule; expressions evaluated by
+  `syncexpr.py` (IIF, IsPresent, IsNullOrEmpty, Left/Right/Mid, InStr, BitAnd/BitOr, CBool/CStr/CNum, Trim, Len,
+  DNComponent/CRef, Contains, ValueCount; `&&`, `||`, comparisons, `&`). Anything else is UNKNOWN.
+- Commands: `describe` (`--custom`, `--filters`), `lint`, `explain` (`--set a=b` or `--csv file --who upn`),
+  `diff` (includes container changes), `impact <old> <new> <population.csv> [--max-changes N] [--max-percent P]`
+  (exit code 1 over the limit or when anything can't be judged).
+- Test data: `tests/data/connect_sample` = Microsoft's AADConnectConfigDocumenter sample (MIT, licence included):
+  62 default rules unchanged, connectors trimmed to id/name/partition filters.
 
 Not built / not known:
-- **The export format is unconfirmed.** The reader uses the ADSync rule object's property names, loosely matched,
-  and reports what it couldn't read. Test it on a real export first and fix `parse_rule`/`_scope`/`_flow`.
-- OU filtering is connector configuration, not a rule: it is passed by hand (`--excluded-ou`); reading it from the
-  export's connector files is not done.
-- Expressions (`IIF(...)`) are shown, not evaluated: objects decided by one are "can't tell". Join rules,
-  group-based filtering and outbound scoping other than `cloudFiltered` are not modelled.
-- No editing or writing of rules, no desktop page, nothing for Cloud Sync (its scoping IS in Graph:
-  synchronization jobs).
-- "Explain" for a user who is NOT synchronised needs on-prem attributes (the object isn't in Entra), hence the CSV.
+- Never run against a live Connect server or a current Connect version (the sample is an older default rule set).
+- Only container filtering and `cloudFiltered` are modelled. Not: the outbound rules' other scope conditions (a
+  group or contact needs more than "not cloudFiltered" to be exported), join rules, group-based filtering,
+  domain/attribute filtering done other ways, attribute precedence for other attributes.
+- Unimplemented expression functions give "can't tell" (Word, Item, Error, StringFromSid, RemoveDuplicates, ...).
+  Assumptions to verify: string comparison is case-insensitive; `DNComponent(x, 1)` is the leftmost component.
+- No editing/writing of rules (the owner mentioned "modify/clean it up"): next step could be generating a proposed
+  rule (as the PowerShell `New-ADSyncRule ...` commands) and validating it with `impact` before it is applied.
+- No desktop page; nothing for Cloud Sync (its scoping IS in Graph: synchronization jobs).
+- Ideas: a `--csv` template command that lists every AD attribute the rules and expressions reference (so the
+  population export has the right columns); clean-up hints (rules that never match the population, disabled clones,
+  overlapping filters); reading `GlobalSettings`.
 
 ## 6. Not verified against a live tenant
 
@@ -152,8 +163,8 @@ first (the owner's test tenant has no eligible roles, so PIM will be tested in p
 - user: assignLicense; Create user
 - Get bitlockerRecoveryKey (`$select=key` is audited); Get deviceLocalCredentialInfo (`$select=credentials`)
 - List devices (`Device.Read.All` or `Directory.Read.All`; unit links use the object `id`, not `deviceId`)
-- Not from Microsoft's docs: the Entra Connect export (`Get-ADSyncServerConfiguration -Path`) was confirmed only from
-  community sources; its JSON layout was not found documented.
+- Entra Connect export: not from the docs but from Microsoft's own sample in
+  github.com/microsoft/AADConnectConfigDocumenter (`src/SolutionOutput/Data/Contoso`, MIT): XML, not JSON.
 
 ## 8. Working notes
 

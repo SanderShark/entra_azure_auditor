@@ -49,13 +49,14 @@ entra_auditor/
                        leaver (offboarding: gather facts, then ONE pure multi-step plan, `plan_leaver`),
                        onboarding (create a user from a template user: `gather_template`, `plan_onboard`),
                        devices (BitLocker keys and LAPS passwords: read on demand, never logged),
-                       syncrules + syncrules_cli (`auditor sync`: Entra Connect rules from an export, OFFLINE:
-                       describe, lint, explain, diff, impact; no Graph, no sign-in)
+                       syncrules + syncexpr + syncrules_cli (`auditor sync`: Entra Connect rules from an XML
+                       export, OFFLINE: describe, lint, explain, diff, impact; no Graph, no sign-in;
+                       syncexpr evaluates the IIF(...) expression language)
   gui/                 PySide6 desktop app (`auditor gui`, optional extra `.[gui]`): tasks (thread pool ->
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, leaver (offboarding dialog), onboarding (new-user dialog), groups_page, devices_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~955 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~1000 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -129,9 +130,15 @@ tests/                 ~955 tests, no network; fakes.py, builders.py, conftest.p
 - Graph can't filter users on `#EXT#` server-side (no `contains` on userPrincipalName), and cross-tenant-synced
   users are often userType Member: "Hide external" drops them while loading (`directory.is_external`). Progress
   and cancellation must count rows scanned, not rows kept.
-- `toolkit/syncrules.py` reads an export format that was never confirmed against a real file; it matches property
-  names loosely and reports what it couldn't read. "Unknown is not no" there too: an unknown operator or a
-  computed `cloudFiltered` gives "can't tell", and the impact validator fails on anything it can't judge.
+- The first sync-rule reader guessed the export was JSON; `Get-ADSyncServerConfiguration` writes XML. When a
+  format can't be obtained from the owner (proprietary data), look for a vendor-published sample before
+  guessing: Microsoft's AADConnectConfigDocumenter (MIT) ships a full export, now `tests/data/connect_sample`
+  (connectors trimmed to their partition filters). It also showed that OU filtering is per-connector container
+  inclusions/exclusions and that the built-in rules set `cloudFiltered` by expression, so an evaluator
+  (`toolkit/syncexpr.py`) was needed for the tool to say anything at all.
+- "Unknown is not no" in the sync tools too: an unknown operator or function gives UNKNOWN (three-valued logic;
+  `True || unknown` is still True), a NULL flow passes the decision to the next rule, and the impact validator
+  fails on anything it can't judge.
 - The property pane is narrow: a five-column table there hid its most important column behind a scrollbar
   (seen only in a screenshot). Use wrapped list entries in detail tabs.
 - Qt makes a dialog's first accept button the default on show: the change preview forced Cancel back as the

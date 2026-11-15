@@ -1,5 +1,7 @@
 """Entra Connect sync rules, offline: read, explain, lint, diff and measure the impact of a change.
-The fixtures use the ADSync rule object's property names; the real export format is still to be confirmed."""
+
+Two kinds of fixtures: Microsoft's published sample export (tests/data/connect_sample, the real XML format) and
+small hand-built rules in the JSON shape, which keep the rule logic tests short."""
 
 from __future__ import annotations
 
@@ -112,8 +114,8 @@ def test_the_owners_convention_is_explained():
     assert out.reason == ("Not synchronised: 'In from AD - Do not sync (ext14)' (precedence 50) sets cloudFiltered to "
                           "True because extensionAttribute14 equals 'no0365sync'.")
     out = S.verdict(rules, {"displayName": "Alice"})
-    assert out.filtered is False and "no rule that applies sets cloudFiltered" in out.reason
-    assert "Organisational-unit filtering is separate" in out.reason and [r.name for r in out.applying] == [STANDARD["Name"]]
+    assert out.filtered is False and "no rule that applies filters it out" in out.reason
+    assert "Container/OU filtering wasn't checked" in out.reason and [r.name for r in out.applying] == [STANDARD["Name"]]
 
 
 def test_an_excluded_ou_filters_before_any_rule_and_matches_whole_components():
@@ -137,9 +139,9 @@ def test_the_lowest_precedence_number_wins_and_disabled_rules_do_not_count():
 
 
 def test_what_cannot_be_evaluated_is_cannot_tell():
-    computed = rule("Computed", 30, [], [("cloudFiltered", 'IIF([department]="Lab",True,False)', "Expression")])
+    computed = rule("Computed", 30, [], [("cloudFiltered", 'IIF(Word([department],1," ")="Lab",True,False)', "Expression")])
     out = S.verdict(ruleset(computed, STANDARD), {"department": "Lab"})
-    assert out.filtered is None and "expression that isn't evaluated here" in out.reason
+    assert out.filtered is None and "couldn't be worked out for this object" in out.reason
     odd = rule("Odd", 30, [[("x", "SOUNDSLIKE", "y")]], [("cloudFiltered", "True", "Constant")])
     out = S.verdict(ruleset(odd, STANDARD), {"x": "y"})
     assert out.filtered is None and "couldn't be evaluated" in out.reason
@@ -245,3 +247,141 @@ def test_a_population_is_read_from_a_get_aduser_csv(tmp_path):
                       {"userPrincipalName": "b@x.com", "distinguishedName": "CN=b,DC=x"}]
     assert [S.verdict(ruleset(), p).filtered for p in people] == [True, False]
     assert isinstance(ruleset().rules[0], SyncRule) and Flow("a", "b").text == "a = b"
+
+
+# ---- expressions decide too ---------------------------------------------------------------------------
+
+def test_an_expression_that_yields_null_passes_the_decision_to_the_next_rule():
+    first = rule("Lab only", 30, [], [("cloudFiltered", 'IIF([department]="Lab",True,NULL)', "Expression")])
+    assert S.verdict(ruleset(first, NO_SYNC, STANDARD), {"department": "Lab"}).decided_by.name == "Lab only"
+    out = S.verdict(ruleset(first, NO_SYNC, STANDARD), {"department": "Sales", "extensionAttribute14": "no0365sync"})
+    assert out.filtered is True and out.decided_by.name == NO_SYNC["Name"]          # NULL at 30, so 50 decides
+    assert S.verdict(ruleset(first, NO_SYNC, STANDARD), {"department": "Sales"}).filtered is False
+    keep = rule("Keep", 20, [], [("cloudFiltered", 'IIF([title]="VIP",False,NULL)', "Expression")])
+    assert S.verdict(ruleset(keep, first, STANDARD), {"department": "Lab", "title": "VIP"}).filtered is False
+
+
+def test_lint_only_complains_about_expressions_it_cannot_read():
+    fine = rule("Fine", 30, [[("a", "EQUAL", "1")]], [("cloudFiltered", 'IIF([department]="Lab",True,NULL)', "Expression")])
+    broken = rule("Broken", 31, [[("a", "EQUAL", "1")]], [("cloudFiltered", 'IIF([department]="Lab",True', "Expression")])
+    found = S.lint(ruleset(fine, broken))
+    assert [(i.level, i.rule) for i in found] == [("warning", "Broken")] and "couldn't be read" in found[0].text
+
+
+# ---- Microsoft's published sample export (the real XML format) -------------------------------------------
+
+SAMPLE = "tests/data/connect_sample"
+CORP = "OU=CORP,DC=contoso,DC=com"
+
+
+def person(name, ou=f"OU=Staff,{CORP}", **attributes):
+    return {"sAMAccountName": name, "userPrincipalName": f"{name}@contoso.com",
+            "distinguishedName": f"CN={name},{ou}", **attributes}
+
+
+@pytest.fixture(scope="module")
+def sample():
+    return S.load_rules(SAMPLE)
+
+
+def test_the_sample_export_is_read_completely(sample):
+    assert len(sample.rules) == 62 and sample.unreadable == []
+    assert sum(1 for r in sample.rules if r.inbound) == 28 and all(r.standard for r in sample.rules)
+    join = next(r for r in sample.rules if r.name == "In from AD - User Join")
+    assert (join.precedence, join.direction, join.source_type, join.target_type, join.link_type) == (
+        100, "Inbound", "user", "person", "Provision")
+    assert join.connector == "contoso.com"                       # the connector's GUID was resolved to its name
+    assert join.scope_text == "isCriticalSystemObject does not equal 'TRUE' and adminDescription does not start with 'User_'"
+    assert join.cloud_filter.kind == "Expression" and join.cloud_filter.understood
+    kinds = {f.kind for r in sample.rules for f in r.flows}
+    assert kinds == {"Expression", "Direct", "Constant"}
+    assert Flow("accountEnabled", "True", "Constant") in next(r for r in sample.rules if r.name == "In from AD - User AccountEnabled").flows
+    several = [r for r in sample.rules if len(r.scope) > 1]
+    assert len(several) == 1 and " OR " in several[0].scope_text
+    assert [(i.level) for i in S.lint(sample)] == ["info"] * 5   # Microsoft's defaults raise nothing worse
+
+
+def test_container_filtering_is_read_from_the_connector(sample):
+    (containers,) = sample.containers
+    assert containers.inclusions == (CORP,) and containers.exclusions == ("DC=contoso,DC=com",)
+    assert containers.text == "contoso.com / DC=contoso,DC=com: reads OU=CORP,DC=contoso,DC=com; except DC=contoso,DC=com"
+    assert S.verdict(sample, person("alice")).filtered is False
+    out = S.verdict(sample, person("bob", ou="OU=Other,DC=contoso,DC=com"))
+    assert out.filtered is True and "DC=contoso,DC=com (excluded on connector contoso.com)" in out.reason
+    assert S.verdict(sample, person("eve", ou="OU=CORPORATE,DC=contoso,DC=com")).filtered is True     # not OU=CORP
+    out = S.verdict(sample, person("dan", ou="DC=fabrikam,DC=com"))
+    assert out.filtered is True and "outside every partition" in out.reason
+    out = S.verdict(sample, {"sAMAccountName": "carol"})
+    assert out.filtered is False and "No distinguishedName was given" in out.reason
+
+
+def test_the_most_specific_container_wins():
+    nested = S.ContainerFilter("c", "DC=x", inclusions=("OU=A,DC=x", "OU=Keep,OU=Off,OU=A,DC=x"), exclusions=("OU=Off,OU=A,DC=x",))
+    assert nested.decides("CN=u,OU=A,DC=x") == (True, "OU=A,DC=x")
+    assert nested.decides("CN=u,OU=Off,OU=A,DC=x") == (False, "OU=Off,OU=A,DC=x")
+    assert nested.decides("CN=u,OU=Keep,OU=Off,OU=A,DC=x") == (True, "OU=Keep,OU=Off,OU=A,DC=x")
+    assert nested.decides("CN=u,DC=x") == (True, "DC=x")          # no container listed: the partition itself
+    assert nested.decides("CN=u,DC=y") is None
+
+
+def test_microsofts_built_in_rules_filter_what_they_should(sample):
+    for name in ("MSOL_1a2b3c4d", "AAD_abcdef"):
+        out = S.verdict(sample, person(name))
+        assert out.filtered is True and out.decided_by.name == "In from AD - User Join", name
+    assert S.verdict(sample, person("mbx", mailNickname="SystemMailbox{1f05a927}")).filtered is True
+    assert S.verdict(sample, person("room", msExchRecipientTypeDetails=str(0x20000000))).filtered is True
+    assert S.verdict(sample, person("alice", mailNickname="alice", msExchRecipientTypeDetails="1")).filtered is False
+    # a critical system object is out of the join rule's scope altogether: nothing filters it, nothing joins it
+    assert "In from AD - User Join" not in [r.name for r in S.verdict(sample, person("krbtgt", isCriticalSystemObject="TRUE")).applying]
+
+
+def with_custom_rule(tmp_path, operator="EQUAL", value="no0365sync", precedence=50, inclusion=CORP):
+    """A copy of the sample plus one custom rule and, optionally, a different included container."""
+    import shutil
+    target = tmp_path / f"export-{operator}-{precedence}-{len(inclusion)}"
+    shutil.copytree(SAMPLE, target)
+    (target / "SynchronizationRules" / "SynchronizationRule_{11111111-2222-3333-4444-555555555555}.xml").write_text(f"""<?xml version="1.0" encoding="utf-8"?>
+<synchronizationRule><id>{{11111111-2222-3333-4444-555555555555}}</id><name>In from AD - User DoNotSync</name>
+<immutable-tag></immutable-tag><direction>Inbound</direction><disabled>False</disabled>
+<connector>{{ae4db4cc-b16b-4eb2-acf5-837ca84e4d7d}}</connector><sourceObjectType>user</sourceObjectType>
+<targetObjectType>person</targetObjectType><linkType>Join</linkType><precedence>{precedence}</precedence>
+<attribute-mappings><mapping><dest>cloudFiltered</dest><src>True</src><valueMergeType>Update</valueMergeType></mapping></attribute-mappings>
+<synchronizationCriteria><conditions><scope><csAttribute>extensionAttribute14</csAttribute><csOperator>{operator}</csOperator>
+<csValue>{value}</csValue></scope></conditions></synchronizationCriteria></synchronizationRule>""")
+    connector = next((target / "Connectors").glob("*ae4db4cc*"))
+    connector.write_text(connector.read_text().replace(f"<inclusion>{CORP}</inclusion>", f"<inclusion>{inclusion}</inclusion>"))
+    return S.load_rules(target)
+
+
+STAFF = ([person(f"user{i}") for i in range(6)] + [person("svc-backup", extensionAttribute14="no0365sync"),
+                                                   person("svc-old", extensionAttribute14="nosync-legacy"),
+                                                   person("MSOL_1a2b3c4d"), person("temp", ou="OU=Temps,DC=contoso,DC=com")])
+
+
+def test_a_custom_filter_rule_on_top_of_the_defaults(sample, tmp_path):
+    custom = with_custom_rule(tmp_path)
+    assert len(custom.rules) == 63 and [r.name for r in custom.rules if not r.standard] == ["In from AD - User DoNotSync"]
+    out = S.verdict(custom, person("svc-backup", extensionAttribute14="no0365sync"))
+    assert out.filtered is True and out.decided_by.name == "In from AD - User DoNotSync"
+    assert out.reason.endswith("because extensionAttribute14 equals 'no0365sync'.")
+    assert S.verdict(custom, person("alice")).filtered is False
+    changes = S.diff(sample, custom)
+    assert [(c.level, c.rule) for c in changes] == [("error", "In from AD - User DoNotSync")]
+    report = S.impact(sample, custom, STAFF)
+    assert report.stop == ["svc-backup@contoso.com"] and report.start == [] and report.unknown == []
+    assert report.unchanged == 9 and not report.acceptable() and report.acceptable(max_changes=1)
+
+
+def test_widening_a_filter_or_moving_the_container_shows_up_in_diff_and_impact(tmp_path):
+    before = with_custom_rule(tmp_path)
+    wider = with_custom_rule(tmp_path, operator="STARTSWITH", value="no")
+    assert "Scope changed" in S.diff(before, wider)[0].text
+    assert S.impact(before, wider, STAFF).stop == ["svc-old@contoso.com"]
+    moved = with_custom_rule(tmp_path, inclusion="DC=contoso,DC=com")          # now the whole domain is read
+    changes = S.diff(before, moved)
+    assert [c.rule for c in changes] == ["(containers)", "(containers)"] and all(c.level == "error" for c in changes)
+    report = S.impact(before, moved, STAFF)
+    assert report.start == ["temp@contoso.com"] and report.stop == []
+    assert S.impact(before, before, STAFF).acceptable()
+    weak = with_custom_rule(tmp_path, precedence=150)                          # below the built-in join rule
+    assert any("Custom rule with precedence 150" in i.text for i in S.lint(weak))

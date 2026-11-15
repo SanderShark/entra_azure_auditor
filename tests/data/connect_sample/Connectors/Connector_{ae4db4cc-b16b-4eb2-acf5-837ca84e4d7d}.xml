@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ma-data><format-version>1</format-version>
+  <id>{AE4DB4CC-B16B-4EB2-ACF5-837CA84E4D7D}</id>
+  <name>contoso.com</name>
+  <category>AD</category>
+  <subtype />
+  <ma-partition-data><partition><id>{dc4c27db-d13d-460a-9a82-c48aba1ee815}</id><name>DC=contoso,DC=com</name><selected>1</selected><filter><object-classes><object-class>computer</object-class><object-class>contact</object-class><object-class>foreignSecurityPrincipal</object-class><object-class>group</object-class><object-class>inetOrgPerson</object-class><object-class>msDS-Device</object-class><object-class>user</object-class><object-class>container</object-class><object-class>domainDNS</object-class><object-class>organizationalUnit</object-class></object-classes><containers><exclusions><exclusion>DC=contoso,DC=com</exclusion></exclusions><inclusions><inclusion>OU=CORP,DC=contoso,DC=com</inclusion></inclusions></containers></filter></partition></ma-partition-data></ma-data>

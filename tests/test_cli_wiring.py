@@ -197,6 +197,11 @@ def test_sync_rules_are_described_linted_and_explained_without_signing_in(tmp_pa
     assert code == 0 and "Not synchronised" in out
     code, out, _ = invoke("sync", "explain", old, "--csv", people, "--who", "a@x.com")
     assert code == 0 and "Synchronised as far as these rules say" in out
+    code, out, _ = invoke("sync", "explain", "tests/data/connect_sample", "--set", "sAMAccountName=MSOL_abc",
+                          "--set", "distinguishedName=CN=MSOL_abc,OU=CORP,DC=contoso,DC=com")
+    assert code == 0 and "Not synchronised" in out and "In from AD - User Join" in out
+    code, out, _ = invoke("sync", "describe", "tests/data/connect_sample", "--filters")
+    assert code == 0 and "5 of 62 rules shown" in out and "OU=CORP,DC=contoso,DC=com" in out
     code, out, _ = invoke("sync", "explain", old, "--set", "displayName=X", "--excluded-ou", "OU=Gone,DC=x",
                           "--set", "distinguishedName=CN=X,OU=Gone,DC=x")
     assert code == 0 and "excluded organisational unit" in out

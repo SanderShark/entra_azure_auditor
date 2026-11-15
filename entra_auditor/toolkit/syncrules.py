@@ -1,12 +1,16 @@
 """Entra Connect Sync rules, offline: read an export, explain it, and check a change before it is applied.
 
-Entra Connect's rules live on the Connect server, not in Microsoft Graph, so this module works on FILES:
+Entra Connect's rules live on the Connect server, not in Microsoft Graph, so this module works on FILES and
+never touches a tenant or the Connect server:
 
     Import-Module ADSync
-    Get-ADSyncServerConfiguration -Path C:\\Temp\\connect-export        # a folder of JSON files
-    Get-ADSyncRule | ConvertTo-Json -Depth 10 > rules.json             # or just the rules
+    Get-ADSyncServerConfiguration -Path C:\\Temp\\connect-export
 
-and never touches a tenant or the Connect server. What it does:
+That writes a folder of XML: ``SynchronizationRules/SynchronizationRule_{guid}.xml`` (one rule each),
+``Connectors/Connector_{guid}.xml`` (each connector, including which containers/OUs it reads) and
+``GlobalSettings``. The format here was taken from the sample export Microsoft publishes with its
+AADConnectConfigDocumenter tool (MIT licence); a trimmed copy is the test data in
+``tests/data/connect_sample``. Nothing in this module is specific to one organisation's conventions.
 
     describe   each rule in plain English (what it applies to, what it sets)
     lint       problems inside one rule set (duplicate precedence, a rule that filters everything, ...)
@@ -16,32 +20,36 @@ and never touches a tenant or the Connect server. What it does:
                or stop synchronising: the "this must not change things wildly" check
 
 How Connect decides (what is modelled here):
-  * A rule applies to an object when its scope filter matches. The scope filter is a list of groups; an
-    object matches when ANY group matches, and a group matches when ALL its conditions do. A rule with no
-    scope filter applies to every object of its type.
-  * An object is kept out of Entra ID when the metaverse attribute ``cloudFiltered`` ends up True. Among the
-    inbound rules that apply and set it, the one with the LOWEST precedence number wins.
-  * "Unknown is not no": an operator this module doesn't know, or a ``cloudFiltered`` value computed by an
-    expression, gives "unknown", never a guess.
+  * **Containers.** Each AD connector partition lists included and excluded containers; an object is read
+    only if the most specific container that holds it is an included one. (This is "OU filtering".)
+  * **Scope.** A rule applies to an object when its scope filter matches: a list of groups; ANY group
+    must match, and within a group ALL conditions.
+  * **cloudFiltered.** An object is kept out of Entra ID when the metaverse attribute ``cloudFiltered``
+    ends up True. Inbound rules that apply contribute in precedence order (lowest number first); a rule
+    whose flow yields NULL contributes nothing and the next one is asked. Microsoft's built-in rules
+    compute it with an expression, which ``syncexpr`` evaluates.
+  * "Unknown is not no": an operator, function or expression that isn't understood gives "can't tell",
+    never a guess, and the impact validator fails on anything it can't judge.
 
-NOT modelled: organisational-unit filtering (it is part of the connector's configuration, not a rule: pass
-``excluded_ous`` to account for it), expressions (IIF(...) etc. are shown, not evaluated), group-based
-filtering, join rules, and outbound scoping other than cloudFiltered.
+NOT modelled: the outbound rules' other scoping conditions (for example, groups and contacts need more
+than "not cloudFiltered" to be exported), join rules, group-based filtering, attribute-based "domain"
+filtering beyond containers, and attribute values other than cloudFiltered.
 
-THE EXPORT FORMAT IS NOT CONFIRMED. The reader accepts the property names of the ADSync rule object
-(Name, Identifier, Direction, Precedence, ScopeFilter -> ScopeConditionList -> Attribute /
-ComparisonOperator / ComparisonValue, AttributeFlowMappings -> Destination / Source / Expression /
-FlowType, Disabled, ImmutableTag ...) case-insensitively and in a few nestings, and reports rules it could
-not understand instead of skipping them silently. Check it against a real export. See CLAUDE.md.
+Also accepted, format NOT confirmed: JSON (``Get-ADSyncRule | ConvertTo-Json``), matched loosely on the
+ADSync object's property names. NOT VERIFIED AGAINST A LIVE CONNECT SERVER. See CLAUDE.md.
 """
 
 from __future__ import annotations
 
 import csv
 import json
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
+
+from .syncexpr import UNKNOWN, ExpressionError, as_filter, evaluate
+from .syncexpr import parse as parse_expression
 
 CLOUD_FILTERED = "cloudfiltered"
 CUSTOM_PRECEDENCE_LIMIT = 100       # Microsoft's convention: custom rules get a precedence below 100
@@ -127,6 +135,28 @@ class Flow:
             return None
         value = self.source.strip().strip('"').casefold()
         return True if value == "true" else False if value == "false" else None
+
+    def filter_value(self, obj: Mapping[str, Any]) -> Any:
+        """What this flow contributes to cloudFiltered for ``obj``: True, False, None (nothing: the next
+        rule is asked) or UNKNOWN (it can't be worked out here)."""
+        kind = self.kind.lower()
+        if kind == "expression":
+            return as_filter(evaluate(self.source, obj))
+        if kind == "direct":
+            return as_filter(_lookup(obj, self.source))
+        constant = self.constant_bool
+        return UNKNOWN if constant is None else constant
+
+    @property
+    def understood(self) -> bool:
+        """False when the flow is an expression this module can't even parse."""
+        if self.kind.lower() != "expression":
+            return True
+        try:
+            parse_expression(self.source)
+        except ExpressionError:
+            return False
+        return True
 
 
 @dataclass
@@ -276,11 +306,101 @@ def parse_rule(raw: Mapping[str, Any]) -> SyncRule:
         flows=[_flow(f) for f in _as_list(_lookup(raw, "AttributeFlowMappings")) if isinstance(f, dict)])
 
 
+def _dn(text: str) -> str:
+    return text.casefold().replace(", ", ",").strip()
+
+
+def _dn_within(dn: str, container: str) -> bool:
+    child, parent = _dn(dn), _dn(container)
+    return bool(parent) and (child == parent or child.endswith("," + parent))
+
+
+@dataclass(frozen=True)
+class ContainerFilter:
+    """Which containers one connector partition reads ("OU filtering")."""
+    connector: str
+    partition: str
+    inclusions: tuple[str, ...] = ()
+    exclusions: tuple[str, ...] = ()
+
+    def decides(self, dn: str) -> Optional[tuple[bool, str]]:
+        """(read?, the container that decided) for a DN in this partition; None when it isn't in it."""
+        if not _dn_within(dn, self.partition):
+            return None
+        best: Optional[tuple[bool, str]] = None
+        for included, containers in ((True, self.inclusions), (False, self.exclusions)):
+            for container in containers:
+                if _dn_within(dn, container) and (best is None or len(_dn(container)) > len(_dn(best[1]))):
+                    best = (included, container)
+        return best if best is not None else (True, self.partition)
+
+    @property
+    def text(self) -> str:
+        return (f"{self.connector} / {self.partition}: reads " + (", ".join(self.inclusions) or "everything")
+                + (f"; except {', '.join(self.exclusions)}" if self.exclusions else ""))
+
+
+def _xml_rule(root: ET.Element, connector_names: Mapping[str, str]) -> SyncRule:
+    def text(tag: str) -> str:
+        return (root.findtext(tag) or "").strip()
+
+    try:
+        precedence: Optional[int] = int(text("precedence"))
+    except ValueError:
+        precedence = None
+    scope = [[Condition((c.findtext("csAttribute") or "?").strip(), (c.findtext("csOperator") or "?").strip(),
+                        (c.findtext("csValue") or "").strip()) for c in group.findall("scope")]
+             for group in root.findall("synchronizationCriteria/conditions")]
+    flows = []
+    for mapping in root.findall("attribute-mappings/mapping"):
+        destination = (mapping.findtext("dest") or "?").strip()
+        expression, src = mapping.findtext("expression"), mapping.find("src")
+        attributes = [(a.text or "").strip() for a in src.findall("attr")] if src is not None else []
+        if expression is not None:
+            flows.append(Flow(destination, expression.strip(), "Expression"))
+        elif attributes:
+            flows.append(Flow(destination, ", ".join(attributes), "Direct"))
+        else:
+            flows.append(Flow(destination, (src.text or "").strip() if src is not None else "", "Constant"))
+    connector_id = text("connector").strip("{}").lower()
+    return SyncRule(name=text("name"), identifier=text("id").strip("{}").lower(), direction=text("direction"),
+                    precedence=precedence, connector=connector_names.get(connector_id, text("connector")),
+                    source_type=text("sourceObjectType"), target_type=text("targetObjectType"),
+                    link_type=text("linkType"), disabled=text("disabled").casefold() == "true",
+                    immutable_tag=text("immutable-tag"), scope=[g for g in scope if g], flows=flows)
+
+
+def _xml_connector(root: ET.Element) -> tuple[str, str, list[ContainerFilter]]:
+    """(id, name, container filters of the selected partitions) of one connector file."""
+    connector_id = (root.findtext("id") or "").strip().strip("{}").lower()
+    name = (root.findtext("name") or connector_id).strip()
+    filters: list[ContainerFilter] = []
+    if (root.findtext("category") or "").strip().upper().startswith("AD"):       # only AD has containers to filter
+        for partition in root.iter("partition"):
+            partition_name = (partition.findtext("name") or "").strip()
+            if not partition_name or (partition.findtext("selected") or "1").strip() != "1":
+                continue
+            inclusions = tuple(t.strip() for t in (e.text or "" for e in partition.iter("inclusion")) if t.strip())
+            exclusions = tuple(t.strip() for t in (e.text or "" for e in partition.iter("exclusion")) if t.strip())
+            filters.append(ContainerFilter(name, partition_name, inclusions, exclusions))
+    return connector_id, name, filters
+
+
 @dataclass
 class RuleSet:
     rules: list[SyncRule]
     source: str = ""
     unreadable: list[str] = field(default_factory=list)     # files/entries that weren't rules
+    containers: list[ContainerFilter] = field(default_factory=list)     # OU filtering, when the export has it
+
+    def container_verdict(self, dn: str) -> Optional[tuple[bool, str]]:
+        """(read?, why) for a distinguished name; None when the export has no container filters or the DN
+        is in none of the connectors' partitions."""
+        for item in self.containers:
+            decided = item.decides(dn)
+            if decided is not None:
+                return decided[0], f"{decided[1]} ({'included' if decided[0] else 'excluded'} on connector {item.connector})"
+        return None
 
     def by_key(self) -> dict[str, SyncRule]:
         return {r.key: r for r in self.rules}
@@ -310,28 +430,49 @@ def _collect(data: Any, where: str, found: list[SyncRule], unreadable: list[str]
 
 
 def load_rules(path: str | Path) -> RuleSet:
-    """Rules from one JSON file, or from every JSON file under a folder (a full Connect export)."""
+    """Rules (and, from a full export, the connectors' container filters) from an export folder or one file.
+    XML is the format ``Get-ADSyncServerConfiguration`` writes; JSON is accepted too."""
     path = Path(path).expanduser()
     if not path.exists():
         raise SyncRuleError(f"{path} does not exist.")
-    files = [path] if path.is_file() else sorted(path.rglob("*.json"))
-    in_rule_folder = [f for f in files if "synchronizationrule" in str(f.parent).lower().replace(" ", "")]
-    files = in_rule_folder or files        # a full export has connectors and settings too: prefer the rules folder
+    files = [path] if path.is_file() else sorted(f for f in path.rglob("*") if f.suffix.lower() in (".xml", ".json"))
     if not files:
-        raise SyncRuleError(f"No JSON files under {path}. Export with: Get-ADSyncServerConfiguration -Path <folder>")
+        raise SyncRuleError(f"No XML or JSON files under {path}. Export with: Get-ADSyncServerConfiguration -Path <folder>")
     found: list[SyncRule] = []
     unreadable: list[str] = []
+    containers: list[ContainerFilter] = []
+    connector_names: dict[str, str] = {}
+    rule_roots: list[ET.Element] = []
     for file in files:
+        if file.suffix.lower() == ".json":
+            try:
+                data = json.loads(file.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError) as exc:
+                unreadable.append(f"{file.name}: {exc}")
+                continue
+            before = len(unreadable)
+            _collect(data, file.name, found, unreadable)
+            if path.is_dir() and len(unreadable) > before:      # other JSON in a folder isn't an error
+                del unreadable[before:]
+            continue
         try:
-            data = json.loads(file.read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError) as exc:
+            root = ET.parse(file).getroot()
+        except (OSError, ET.ParseError) as exc:
             unreadable.append(f"{file.name}: {exc}")
             continue
-        _collect(data, file.name, found, unreadable)
+        if root.tag == "synchronizationRule":
+            rule_roots.append(root)
+        elif root.tag == "ma-data":
+            connector_id, name, filters = _xml_connector(root)
+            connector_names[connector_id] = name
+            containers += filters
+        elif path.is_file():
+            unreadable.append(f"{file.name}: not a synchronisation rule (root element <{root.tag}>)")
+    found += [_xml_rule(root, connector_names) for root in rule_roots]      # after the connectors, for their names
     if not found:
-        raise SyncRuleError(f"No synchronisation rules were recognised in {path}. Expected JSON objects with Name, "
-                            "Direction, Precedence, ScopeFilter and AttributeFlowMappings.")
-    return RuleSet(found, str(path), unreadable)
+        raise SyncRuleError(f"No synchronisation rules were recognised in {path}. Expected the folder written by "
+                            "Get-ADSyncServerConfiguration -Path (SynchronizationRules/*.xml), or one such file.")
+    return RuleSet(found, str(path), unreadable, containers)
 
 
 def load_population(path: str | Path) -> list[dict[str, Any]]:
@@ -355,48 +496,57 @@ class Verdict:
     uncertain: list[SyncRule] = field(default_factory=list)      # rules whose scope couldn't be evaluated
 
 
-def _dn_in(dn: str, ous: Iterable[str]) -> Optional[str]:
-    folded = dn.casefold().replace(", ", ",")
-    for ou in ous:
-        suffix = ou.casefold().replace(", ", ",")
-        if folded == suffix or folded.endswith("," + suffix):
-            return ou
-    return None
+def _precedence(rule: SyncRule) -> tuple[int, str]:
+    return (rule.precedence if rule.precedence is not None else 10**9, rule.name)
 
 
 def verdict(rules: RuleSet | Sequence[SyncRule], obj: Mapping[str, Any], *, object_type: str = "user",
-            excluded_ous: Sequence[str] = ()) -> Verdict:
-    rule_list = rules.rules if isinstance(rules, RuleSet) else list(rules)
+            excluded_ous: Iterable[str] = ()) -> Verdict:
+    """Is ``obj`` (AD attribute name -> value) kept out of Entra ID, and why. ``excluded_ous`` adds exclusions
+    by hand, for exports without connector files."""
+    ruleset = rules if isinstance(rules, RuleSet) else RuleSet(list(rules))
     dn = str(_lookup(obj, "distinguishedName") or _lookup(obj, "dn") or "")
-    ou = _dn_in(dn, excluded_ous) if dn else None
-    if ou:
-        return Verdict(True, f"Not synchronised: it is in the excluded organisational unit {ou}.")
-    candidates = sorted((r for r in rule_list if r.inbound and not r.disabled
-                         and (not r.source_type or r.source_type.casefold() == object_type.casefold())),
-                        key=lambda r: (r.precedence if r.precedence is not None else 10**9, r.name))
+    containers_checked = bool(list(excluded_ous)) or bool(ruleset.containers)
+    if dn:
+        manual = next((ou for ou in excluded_ous if _dn_within(dn, ou)), None)
+        if manual:
+            return Verdict(True, f"Not synchronised: it is in the excluded organisational unit {manual}.")
+        decided = ruleset.container_verdict(dn)
+        if decided is not None and not decided[0]:
+            return Verdict(True, f"Not synchronised: its container isn't read. Decided by {decided[1]}.")
+        if decided is None and ruleset.containers:
+            return Verdict(True, "Not synchronised: it is outside every partition the connectors read.")
+    if dn and "dn" not in {str(k).casefold() for k in obj}:
+        obj = {**obj, "dn": dn}                     # Microsoft's expressions call the DN [dn]
+    candidates = sorted((r for r in ruleset.rules if r.inbound and not r.disabled
+                         and (not r.source_type or r.source_type.casefold() == object_type.casefold())), key=_precedence)
     applying, uncertain = [], []
     for rule in candidates:
         scoped = rule.in_scope(obj)
         (applying if scoped else uncertain if scoped is None else []).append(rule)
-    deciders = [r for r in sorted(applying + uncertain, key=lambda r: (r.precedence if r.precedence is not None else 10**9))
-                if r.cloud_filter is not None]
-    for rule in deciders:
+    for rule in sorted((r for r in applying + uncertain if r.cloud_filter is not None), key=_precedence):
         flow = rule.cloud_filter
         assert flow is not None
+        where = f"'{rule.name}' (precedence {rule.precedence})"
         if rule in uncertain:
-            return Verdict(None, f"Can't tell: '{rule.name}' (precedence {rule.precedence}) would decide, but its scope "
-                                 f"uses something that couldn't be evaluated ({rule.scope_text}).", rule, applying, uncertain)
-        value = flow.constant_bool
+            return Verdict(None, f"Can't tell: {where} could decide, but its scope uses something that couldn't be "
+                                 f"evaluated ({rule.scope_text}).", rule, applying, uncertain)
+        value = flow.filter_value(obj)
         if value is None:
-            return Verdict(None, f"Can't tell: '{rule.name}' (precedence {rule.precedence}) sets cloudFiltered with an "
-                                 f"expression that isn't evaluated here: {flow.source}", rule, applying, uncertain)
+            continue                                # NULL: this rule contributes nothing; ask the next one
+        if value is UNKNOWN:
+            return Verdict(None, f"Can't tell: {where} sets cloudFiltered with an expression that couldn't be "
+                                 f"worked out for this object: {flow.source}", rule, applying, uncertain)
+        how = "its expression is true for this object" if flow.kind.lower() == "expression" else rule.scope_text
         if value:
-            return Verdict(True, f"Not synchronised: '{rule.name}' (precedence {rule.precedence}) sets cloudFiltered "
-                                 f"to True because {rule.scope_text}.", rule, applying, uncertain)
-        return Verdict(False, f"Synchronised: '{rule.name}' (precedence {rule.precedence}) sets cloudFiltered to False "
-                              "and outranks any rule that would filter it.", rule, applying, uncertain)
-    return Verdict(False, "Synchronised as far as these rules say: no rule that applies sets cloudFiltered."
-                   + ("" if excluded_ous else " (Organisational-unit filtering is separate and wasn't given.)"),
+            return Verdict(True, f"Not synchronised: {where} sets cloudFiltered to True because {how}.",
+                           rule, applying, uncertain)
+        return Verdict(False, f"Synchronised: {where} sets cloudFiltered to False and outranks any rule that would "
+                              "filter it.", rule, applying, uncertain)
+    note = "" if containers_checked and dn else (" (No distinguishedName was given, so container/OU filtering wasn't "
+                                                 "checked.)" if containers_checked else
+                                                 " (Container/OU filtering wasn't checked: the export has no connector files.)")
+    return Verdict(False, "Synchronised as far as these rules say: no rule that applies filters it out." + note,
                    None, applying, uncertain)
 
 
@@ -437,9 +587,10 @@ def lint(rules: RuleSet) -> list[Issue]:
             if flow.constant_bool is True and not rule.scope:
                 issues.append(Issue("error", rule.name, "Sets cloudFiltered to True with no scope filter: it would "
                                                         "remove EVERY object of its type from Entra ID."))
-            elif flow.constant_bool is None:
-                issues.append(Issue("info", rule.name, f"cloudFiltered is computed by an expression ({flow.source}); "
-                                                       "explain and impact report 'can't tell' for the objects it decides."))
+            elif not flow.understood:
+                issues.append(Issue("warning", rule.name, f"cloudFiltered is set by an expression that couldn't be read "
+                                                          f"({flow.source}); explain and impact report 'can't tell' "
+                                                          "for the objects it decides."))
         if not rule.standard and rule.precedence is not None and rule.precedence >= CUSTOM_PRECEDENCE_LIMIT:
             issues.append(Issue("warning", rule.name, f"Custom rule with precedence {rule.precedence}: custom rules "
                                                       f"normally sit below {CUSTOM_PRECEDENCE_LIMIT} so they outrank the "
@@ -501,6 +652,11 @@ def diff(old: RuleSet, new: RuleSet) -> list[Issue]:
                                 ("link type", rule.link_type, now.link_type)):
             if a != b:
                 changes.append(Issue("warning", now.name, f"{attribute.capitalize()} changed from '{a}' to '{b}'."))
+    was_containers, now_containers = {c.text for c in old.containers}, {c.text for c in new.containers}
+    for text in sorted(was_containers - now_containers):
+        changes.append(Issue("error", "(containers)", f"Container filter removed or changed; was: {text}"))
+    for text in sorted(now_containers - was_containers):
+        changes.append(Issue("error", "(containers)", f"Container filter added or changed; now: {text}"))
     return _sorted(changes)
 
 
@@ -528,7 +684,8 @@ class Impact:
 
 def impact(old: RuleSet, new: RuleSet, population: Sequence[Mapping[str, Any]], *, object_type: str = "user",
            excluded_ous: Sequence[str] = (), new_excluded_ous: Optional[Sequence[str]] = None) -> Impact:
-    """Run both rule sets over ``population`` and report who would start or stop synchronising."""
+    """Run both rule sets (and each export's own container filters) over ``population`` and report who would
+    start or stop synchronising."""
     after_ous = excluded_ous if new_excluded_ous is None else new_excluded_ous
     report = Impact(total=len(population))
     for obj in population:
