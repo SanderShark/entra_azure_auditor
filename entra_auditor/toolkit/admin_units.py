@@ -13,6 +13,9 @@ Endpoints (Microsoft Graph v1.0):
     GET /roleManagement/directory/roleAssignments?$filter=directoryScopeId eq '/administrativeUnits/{id}'
     GET /roleManagement/directory/roleEligibilitySchedules?$filter=directoryScopeId eq ...
     GET /directory/administrativeUnits/{id}/scopedRoleMembers   (fallback; active assignments only)
+    GET /users/{id}/memberOf, /groups/{id}/memberOf          the units an object is in (direct membership
+                                                             includes administrative units; User.Read.All /
+                                                             GroupMember.Read.All or Directory.Read.All)
 Changes (members, settings) are planned in toolkit/actions.py and need AdministrativeUnit.ReadWrite.All.
 
 NOT VERIFIED AGAINST A LIVE TENANT (built from the Graph docs and tested against a fake). See CLAUDE.md.
@@ -143,6 +146,20 @@ def _member(raw: dict[str, Any]) -> AuMember:
         security_enabled=raw.get("securityEnabled") if kind == "group" else None,
         mail_enabled=raw.get("mailEnabled") if kind == "group" else None,
         unified="Unified" in (raw.get("groupTypes") or []), synced=bool(raw.get("onPremisesSyncEnabled")))
+
+
+def admin_units_of(graph: Any, kind: str, object_id: str) -> dict[str, str]:
+    """{unit id: name} of the administrative units a user or group is a member of. Raises GraphError when
+    they can't be read (the caller decides what "unknown" means).
+
+    Plain ``memberOf`` filtered here by ``@odata.type``: the OData cast
+    (``/memberOf/microsoft.graph.administrativeUnit``) needs ConsistencyLevel: eventual and $count.
+    Membership of a hidden-membership unit may be missing without Member.Read.Hidden.
+    """
+    collection = {"user": "users", "group": "groups"}[kind]
+    items = graph.get_all(f"/{collection}/{segment(object_id)}/memberOf", select=["id", "displayName"])
+    return {str(i["id"]): str(i.get("displayName") or i["id"]) for i in items
+            if str(i.get("@odata.type", "")).lower().endswith("administrativeunit")}
 
 
 def _hard(exc: GraphError) -> bool:

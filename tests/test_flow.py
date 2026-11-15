@@ -329,3 +329,112 @@ def test_without_group_pim_permissions_the_flow_still_offers_roles():
     env.flow.start()
     step = env.flow.confirm(True)
     assert [c.name for c in step.candidate_roles] == ["User Administrator"]
+
+
+# ---- roles scoped to an administrative unit ----------------------------------------------
+
+def scoped_tenant(members=("u-alice",), **kwargs):
+    """Eligible for User Administrator in the Seattle unit only (and tenant-wide for nothing useful)."""
+    kwargs.setdefault("eligible", ("Global Reader",))
+    tenant = FakeTenant(**kwargs)
+    tenant.add_admin_unit("au-sea", "Seattle", members=members)
+    tenant.add_scoped_eligibility("User Administrator", "au-sea")
+    return tenant
+
+
+def test_a_role_scoped_to_a_unit_the_target_is_not_in_is_not_offered():
+    env = make(scoped_tenant(members=("u-bob",)))            # the plan targets Alice
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert isinstance(step, F.Done) and step.result.status == "denied"
+    assert not env.tenant.scoped_active                       # nothing was activated for nothing
+    said = texts(env.reporter)
+    assert "scoped to an administrative unit" in said and "isn't in" in said
+
+
+def test_a_role_scoped_to_a_unit_the_target_is_in_is_offered_and_works():
+    env = make(scoped_tenant(members=("u-alice",)))
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert isinstance(step, F.NeedsElevation)
+    (role,) = step.candidate_roles
+    assert role.scope == "/administrativeUnits/au-sea" and "Seattle" in role.label
+    env.flow.choose_role(role)
+    step = env.flow.justify("INC-7")
+    assert step.result.status == "ok" and env.tenant.users["u-alice"]["jobTitle"] == "Principal"
+    request = next(w[2] for w in env.tenant.writes if w[1] == "pim")
+    assert request["directoryScopeId"] == "/administrativeUnits/au-sea"
+
+
+def test_tenant_wide_eligibility_is_offered_before_a_scoped_one_and_never_hidden_by_it():
+    tenant = scoped_tenant(members=("u-alice",), eligible=("User Administrator",))
+    env = make(tenant)
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert [r.scope for r in step.candidate_roles] == ["/", "/administrativeUnits/au-sea"]
+
+    env = make(scoped_tenant(members=("u-bob",), eligible=("User Administrator",)))   # Alice is outside the unit
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert [r.scope for r in step.candidate_roles] == ["/"]
+
+
+def test_an_active_scoped_role_that_does_not_cover_the_target_is_not_mistaken_for_enough():
+    tenant = scoped_tenant(members=("u-bob",), eligible=("User Administrator",))
+    tenant.scoped_active[("r-user-administrator", "/administrativeUnits/au-sea")] = "User Administrator"
+    env = make(tenant)
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert isinstance(step, F.NeedsElevation), texts(env.reporter)       # not "you already have it; retrying"
+    assert [r.scope for r in step.candidate_roles] == ["/"]              # the tenant-wide one is still offered
+    env.flow.choose_role(step.candidate_roles[0])
+    step = env.flow.justify("INC-8")                                     # ... and waiting isn't fooled either
+    assert step.result.status == "ok" and "r-user-administrator" in tenant.active_roles
+
+
+def test_an_active_scoped_role_that_covers_the_target_is_used_without_elevating():
+    tenant = scoped_tenant(members=("u-alice",))
+    tenant.scoped_active[("r-user-administrator", "/administrativeUnits/au-sea")] = "User Administrator"
+    tenant._denied_after_activation = 1                                  # the first try is denied
+    env = make(tenant)
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert isinstance(step, F.Done) and step.result.status == "ok" and "already have" in texts(env.reporter)
+
+
+def test_when_the_targets_units_cannot_be_read_scoped_roles_are_offered_last_with_a_caveat():
+    tenant = scoped_tenant(members=("u-alice",), eligible=("User Administrator",))
+    tenant.memberof_denied = True
+    env = make(tenant)
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert [r.scope for r in step.candidate_roles] == ["/", "/administrativeUnits/au-sea"]
+    assert "Couldn't check which administrative units" in texts(env.reporter)
+
+
+def test_a_scoped_role_never_counts_for_changing_the_unit_itself():
+    from entra_auditor.toolkit.actions import plan_update_admin_unit
+    from entra_auditor.toolkit.admin_units import get_admin_unit
+    tenant = FakeTenant(eligible=("Global Reader",))
+    tenant.add_admin_unit("au-sea", "Seattle")
+    tenant.add_scoped_eligibility("Privileged Role Administrator", "au-sea")
+    plan = plan_update_admin_unit(get_admin_unit(tenant, "au-sea"), {"description": "West coast"})
+    env = make(tenant, plan=plan)
+    env.flow.start()
+    step = env.flow.confirm(True)
+    assert isinstance(step, F.Done) and step.result.status == "denied" and not tenant.scoped_active
+
+
+def test_a_pim_group_whose_role_is_scoped_to_another_unit_is_not_offered():
+    from entra_auditor.toolkit.group_pim import GroupPimService
+    for members, offered in ((("u-bob",), False), (("u-alice",), True)):
+        tenant = FakeTenant(eligible=("Global Reader",))
+        tenant.add_admin_unit("au-sea", "Seattle", members=members)
+        tenant.add_pim_group("g-hd", "Seattle Helpdesk", roles=("User Administrator",), au="au-sea")
+        env = make(tenant, group_pim=GroupPimService(tenant, sleep=lambda s: None))
+        env.flow.start()
+        step = env.flow.confirm(True)
+        assert isinstance(step, F.NeedsElevation) is offered, members
+        if offered:
+            env.flow.choose_role(step.candidate_roles[0])
+            assert env.flow.justify("INC-9").result.status == "ok"

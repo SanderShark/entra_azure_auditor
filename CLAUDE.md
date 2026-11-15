@@ -47,7 +47,7 @@ entra_auditor/
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~770 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~780 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -98,6 +98,11 @@ tests/                 ~770 tests, no network; fakes.py, builders.py, conftest.p
 - New permissions (PIM for Groups, AdministrativeUnit.ReadWrite.All) are deliberately NOT added to
   TOOLKIT_SCOPES: requesting an unconsented scope breaks sign-in for every command. Pages explain a 403 instead.
 - The change preview must show everything that will be sent: request bodies wrap, never elide (tested).
+- PIM roles were matched by name only, so eligibility scoped to one administrative unit was offered for targets
+  outside it (activation worked, the retry was still denied) and could hide the tenant-wide eligibility of the
+  same name. A role is `(id, scope)`: use `pim.scope_applies` / `PimService.match(..., target_scopes)`; the flow
+  looks up the target's units (`admin_units.admin_units_of`) only when a scoped role is in play. A unit-scoped
+  role manages the unit's members, never the unit itself.
 - Qt makes a dialog's first accept button the default on show: the change preview forced Cancel back as the
   default (Enter must never apply a change). Keep that test.
 
@@ -111,7 +116,9 @@ app's elevation dialogs** (`gui/change.py`: role choice, justification, wait, re
 browser through `gui/session.py`) and its directory load at scale, **PIM for Groups** (`toolkit/group_pim.py`,
 the Roles / PIM page and group candidates in the elevation flow), **administrative units** (`toolkit/admin_units.py`,
 the AU plans in `actions.py`, the AU page; in particular whether `$filter=directoryScopeId eq '/administrativeUnits/..'`
-works on roleAssignments/roleEligibilitySchedules, which has a scopedRoleMembers fallback), and the assumption
+works on roleAssignments/roleEligibilitySchedules, which has a scopedRoleMembers fallback), **unit-scoped PIM
+roles in the elevation flow** (that `memberOf` lists the target's administrative units with `@odata.type`, and
+that `selfActivate` with `directoryScopeId=/administrativeUnits/<id>` works), and the assumption
 that permissions consented on the app registration but not requested at sign-in (PIM for Groups, AU writes)
 still appear in the token, group add/remove after the
 0.2.3 fix, certificate-ID writes, the group audit's `$expand` behaviour at scale, and the `$expand` on the PIM

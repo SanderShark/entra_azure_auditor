@@ -1,27 +1,27 @@
 # Next session: start here
 
-Handoff written 2026-11-14 at the end of a long session. Read this, then `CLAUDE.md` (project rules), then work.
+Handoff written 2026-11-14 at the end of a long session; updated the same day by the next session (scope fix). Read this, then `CLAUDE.md` (project rules), then work.
 Delete or rewrite this file once its first steps are done.
 
 ## 1. First steps (in order)
 
-1. **Push.** Nothing from this work is on GitHub yet: the old session had no GitHub credentials.
+1. **Push.** Still nothing from this work on GitHub. Two sessions in a row had no GitHub credentials
+   (`git push` cannot authenticate; attaching the repository to the cloud session was not permitted).
    - Local `main` is 1 commit ahead of `origin/main` (`a569861`, steps 1-2 of the roadmap).
-   - Local `gui` holds everything since (10 commits, latest `b2761c8`).
-   - With the new GitHub connector, or from the owner's machine: `git push -u origin main gui`.
+   - Local `gui` holds everything since.
+   - From the owner's machine, or a session with GitHub access: `git push -u origin main gui`.
    - A second clone exists at `/home/inspector/dev/entra_azure_auditor` (made while trying to push). It only holds
-     copies of these branches. Delete it once the push succeeded, unless the session uses it as its checkout.
-2. **Check the Microsoft documentation skill/tool is loaded** and use it for every Graph endpoint, permission and
-   property from now on (owner's request). Last session used WebFetch on learn.microsoft.com instead; the pages used are
-   listed in section 6.
+     older copies of these branches. Delete it once the push succeeded.
+2. **Microsoft documentation:** no docs skill was loaded in the second session either; WebFetch on
+   learn.microsoft.com was used (pages in section 6). Use the skill if it is there.
 3. **Set up and run the checks** (the environment's `python` is missing; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   .venv/bin/python -m pytest          # 759 passed at handoff (GUI tests run headless, QT_QPA_PLATFORM=offscreen)
-   .venv/bin/ruff check .              # clean at handoff
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest     # 777 passed after the scope fix
+   .venv/bin/ruff check .                                   # clean
    ```
-4. **Fix the scope bug (section 4)** before new features. Then pick from the ideas (section 5), and ask the owner
-   about role-assignment writes (section 3) when that comes up.
+4. The scope bug (section 4) is **fixed**. Next: pick from the ideas (section 5) with the owner, and ask about
+   role-assignment writes (section 3) when that comes up.
 
 ## 2. What exists now
 
@@ -62,17 +62,24 @@ administrative units (`add_admin_unit`) and devices, all enforcing Entra's rules
 - **Licence** for the repo: `LICENSE` was deleted on purpose; don't add one until the owner chooses.
 - Owner's biggest tenant size was never given (assumed under 50k users).
 
-## 4. Known bug to fix first: PIM role scope is ignored
+## 4. Fixed: PIM role scope was ignored
 
-Found by reading the code, not yet reproduced in a test. `PimService.match()` (`toolkit/pim.py`) matches eligible
-roles by **name only**, and `eligible()` can return the same role twice (tenant-wide `/` and scoped to
-`/administrativeUnits/<id>`). The elevation flow could therefore offer an AU-scoped role for a target outside that
-AU: activation succeeds, the retry is still denied.
+Roles were matched by name only. Reproduced in tests, then fixed (tests in `test_flow.py`, `test_pim.py`,
+`test_group_pim.py`, `test_admin_units.py`, `test_real_client_flows.py`):
+- A role eligible for one administrative unit is offered only when the plan's target (user or group) is a member
+  of that unit; tenant-wide eligibility comes first and is no longer hidden by a scoped one of the same name.
+- An active unit-scoped role that doesn't cover the target no longer counts as "you already have it", and waiting
+  for an activation checks the scope.
+- Same for PIM groups whose role assignment is unit-scoped (`GroupAccess.role_scopes`).
+- A unit-scoped role is never offered for changing the unit itself (it manages the unit's members only).
+- If the target's units can't be read, scoped roles are offered last with a caveat (unknown is not "no").
+- The lookup is plain `GET /users|groups/{id}/memberOf` filtered by `@odata.type` (the OData cast needs
+  ConsistencyLevel: eventual + $count), done only when a scoped role is in play.
 
-Fix: prefer tenant-wide eligibility; offer an AU-scoped role only when the plan's target is a member of that AU
-(look up `GET /users/{id}/memberOf/microsoft.graph.administrativeUnit`, or the group/device equivalent; check the
-docs). Write the failing test first (FakeTenant: eligible for "User Administrator" scoped to an AU the target isn't
-in). Same question for `GroupPimService.granting()` if a group's role assignment is AU-scoped.
+Known gaps, not handled: a target in a **restricted management** unit can't be changed with a tenant-wide role
+(the flow still offers it; the retry is denied); membership of **hidden-membership** units may be missing from
+`memberOf` without Member.Read.Hidden; plans with several objects (group add/remove members) check the group
+only, which is what Entra checks.
 
 ## 5. Ideas the owner liked the sound of (pick with the owner)
 
@@ -103,12 +110,15 @@ first; the owner's test tenant has no eligible roles, so PIM will be tested in a
 - The assumption that permissions consented on the app registration but **not requested at sign-in** still
   appear in the token. New permissions (PIM for Groups, `AdministrativeUnit.ReadWrite.All`, `Member.Read.Hidden`)
   are deliberately not in `TOOLKIT_SCOPES`, because requesting an unconsented scope breaks every sign-in.
+- Unit-scoped PIM roles in the elevation flow (`memberOf` listing units; `selfActivate` with a unit scope).
 - Plus the older list in CLAUDE.md (group add/remove after 0.2.3, certificate-ID writes, `$expand` at scale).
 
 Docs pages used last session (re-check with the docs skill):
 - privilegedAccessGroup: create assignmentScheduleRequest; eligibilityScheduleInstance filterByCurrentUser
 - administrativeUnit resource; add member; list members; list scopedRoleMembers
 - List unifiedRoleAssignments (`$expand=principal` documented; `directoryScopeId` filter not explicitly listed)
+- List a user's direct memberships / List group memberships (return administrative units; cast needs advanced query)
+- Assign Microsoft Entra roles, "administrative unit scope" (scoped roles manage members, not the unit; role list)
 - List devices (`Device.Read.All` or `Directory.Read.All`; AU links use the object `id`, not `deviceId`)
 
 ## 7. Working notes

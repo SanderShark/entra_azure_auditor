@@ -107,3 +107,29 @@ def test_granting_picks_eligible_memberships_whose_group_holds_the_role():
     # already active: not offered again
     active = [GroupAccess("g-uadm", "User Admins (PIM)", "member", "active")]
     assert GroupPimService.granting(eligible, ["User Administrator"], active) == []
+
+
+def test_a_group_holding_a_role_for_one_unit_only_grants_it_inside_that_unit_only():
+    au, other = "/administrativeUnits/au-1", "/administrativeUnits/au-2"
+    scoped = GroupAccess("g-s", "Seattle Helpdesk", "member", roles=("User Administrator",),
+                         role_scopes=(("User Administrator", au),))
+    wide = GroupAccess("g-w", "User Admins", "member", roles=("User Administrator",),
+                       role_scopes=(("User Administrator", "/"),))
+    names = ["User Administrator"]
+    assert GroupPimService.granting([scoped, wide], names, target_scopes=frozenset({"/", au})) == [scoped, wide]
+    assert GroupPimService.granting([scoped, wide], names, target_scopes=frozenset({"/", other})) == [wide]
+    assert GroupPimService.granting([scoped, wide], names, target_scopes=frozenset({"/"})) == [wide]
+    assert GroupPimService.granting([scoped, wide], names, target_scopes=None) == [wide, scoped]   # unknown: last
+    assert "one administrative unit only" in scoped.label and "only" not in wide.label
+    # a group holding the role both ways grants it everywhere
+    both = GroupAccess("g-b", "Both", "member", roles=("User Administrator",),
+                       role_scopes=(("User Administrator", au), ("User Administrator", "/")))
+    assert both.grants("User Administrator", frozenset({"/"})) is True and "only" not in both.label
+
+
+def test_the_scope_of_a_groups_roles_is_read_with_the_roles():
+    t = FakeTenant().add_admin_unit("au-1", "Seattle")
+    t.add_pim_group("g-hd", "Seattle Helpdesk", roles=("User Administrator",), au="au-1")
+    (access,) = GroupPimService(t, sleep=lambda s: None).eligible()
+    assert access.roles == ("User Administrator",)
+    assert access.role_scopes == (("User Administrator", "/administrativeUnits/au-1"),)

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from entra_auditor.toolkit import actions
-from entra_auditor.toolkit.pim import PimError, PimService, iso_duration
+from entra_auditor.toolkit.pim import PimError, PimRole, PimService, iso_duration
 from tests.fakes import FakeTenant
 
 CLOCK = lambda: datetime(2026, 10, 6, 12, 0, 0, tzinfo=timezone.utc)  # noqa: E731
@@ -105,3 +105,74 @@ def test_not_eligible_is_explained():
     tenant.eligible_names.clear()                      # eligibility was removed meanwhile
     with pytest.raises(PimError, match="aren't allowed"):
         pim.activate(role, reason="x")
+
+
+# ---- roles scoped to an administrative unit ------------------------------------------------
+
+AU = "/administrativeUnits/au-1"
+EVERYWHERE = frozenset({"/"})
+IN_AU = frozenset({"/", AU})
+
+
+def test_a_scope_covers_the_tenant_or_the_members_of_one_unit_or_is_unknown():
+    from entra_auditor.toolkit.pim import scope_applies
+    assert scope_applies("/", EVERYWHERE) and scope_applies("", None) and scope_applies(None, EVERYWHERE)
+    assert scope_applies(AU, IN_AU) is True
+    assert scope_applies(AU, EVERYWHERE) is False                       # the target is in no unit
+    assert scope_applies(AU, frozenset({"/", "/administrativeUnits/au-2"})) is False
+    assert scope_applies(AU, None) is None                              # units unknown: can't tell
+    assert scope_applies("/0b1c-app-object-id", IN_AU) is False         # scoped to one app registration
+    assert scope_applies("/0b1c-app-object-id", None) is False
+
+
+def test_match_keeps_tenant_wide_and_scoped_eligibility_for_the_same_role_apart():
+    wide = PimRole("r-ua", "User Administrator")
+    scoped = PimRole("r-ua", "User Administrator", AU)
+    for order in ([wide, scoped], [scoped, wide]):                      # whichever Graph lists first
+        assert PimService.match(order, ["User Administrator"], target_scopes=IN_AU) == [wide, scoped]
+        assert PimService.match(order, ["User Administrator"], target_scopes=EVERYWHERE) == [wide]
+        assert PimService.match(order, ["User Administrator"], target_scopes=None) == [wide, scoped]
+    assert PimService.match([scoped], ["User Administrator"], target_scopes=EVERYWHERE) == []
+
+
+def test_match_puts_roles_that_only_might_apply_after_every_role_that_does():
+    scoped_first_choice = PimRole("r-hd", "Helpdesk Administrator", AU)
+    wide_second_choice = PimRole("r-ua", "User Administrator")
+    picks = PimService.match([scoped_first_choice, wide_second_choice],
+                             ["Helpdesk Administrator", "User Administrator"], target_scopes=None)
+    assert picks == [wide_second_choice, scoped_first_choice]
+    picks = PimService.match([scoped_first_choice, wide_second_choice],
+                             ["Helpdesk Administrator", "User Administrator"], target_scopes=IN_AU)
+    assert picks == [scoped_first_choice, wide_second_choice]           # known to apply: preference order wins
+
+
+def test_a_role_active_at_one_scope_is_still_offered_at_another():
+    wide = PimRole("r-ua", "User Administrator")
+    scoped = PimRole("r-ua", "User Administrator", AU)
+    active_scoped = PimRole("r-ua", "User Administrator", AU, "active")
+    assert PimService.match([wide, scoped], ["User Administrator"], [active_scoped], IN_AU) == [wide]
+    active_wide = PimRole("r-ua", "User Administrator", "/", "active")
+    assert PimService.match([wide, scoped], ["User Administrator"], [active_wide], IN_AU) == [scoped]
+
+
+def test_labels_say_when_a_role_is_for_one_unit_only():
+    assert PimRole("r", "User Administrator").label == "User Administrator"
+    assert PimRole("r", "User Administrator", AU).label == "User Administrator (administrative unit au-1 only)"
+    assert PimRole("r", "User Administrator", AU, scope_name="Seattle").label == \
+        "User Administrator (administrative unit Seattle only)"
+    assert PimRole("r", "Application Administrator", "/app-1").label == "Application Administrator (scope /app-1)"
+
+
+def test_scoped_eligibility_is_listed_activated_and_awaited_at_its_own_scope():
+    tenant = FakeTenant(eligible=("User Administrator",))
+    tenant.add_admin_unit("au-1", "Seattle").add_scoped_eligibility("User Administrator", "au-1")
+    pim = service(tenant)
+    assert [r.scope for r in pim.eligible()] == ["/", AU]
+    scoped = next(r for r in pim.eligible() if r.scope == AU)
+    pim.activate(scoped, reason="x")
+    assert [w for w in tenant.writes if w[1] == "pim"][-1][2]["directoryScopeId"] == AU
+    assert pim.wait_until_active(scoped.role_id, timeout=0, scope=AU)
+    assert not pim.wait_until_active(scoped.role_id, timeout=0, scope="/")   # tenant-wide isn't active
+    assert pim.wait_until_active(scoped.role_id, timeout=0)                  # no scope given: any scope
+    pim.deactivate(next(r for r in pim.active() if r.scope == AU))
+    assert pim.active() == []

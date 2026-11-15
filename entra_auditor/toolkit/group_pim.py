@@ -21,11 +21,11 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Callable, Collection, Iterable, Literal, Optional
 
 from ..graph.client import GraphError, GraphNotFoundError, GraphPermissionError
 from .odata import literal, segment
-from .pim import ActivationResult, PimError, PimService, _to_dt, _utcnow, iso_duration
+from .pim import TENANT_SCOPE, ActivationResult, PimError, PimService, _to_dt, _utcnow, iso_duration, scope_applies
 
 BASE = "/identityGovernance/privilegedAccess/group"
 ELIGIBLE_PATH = f"{BASE}/eligibilityScheduleInstances/filterByCurrentUser(on='principal')"
@@ -47,6 +47,23 @@ class GroupAccess:
     ends: datetime | None = None
     activated: bool = False           # active through a PIM activation (vs a standing assignment)
     roles: tuple[str, ...] = field(default=(), compare=False)   # directory roles the group holds
+    # (role name, directoryScopeId) for each of those: a group can hold a role for one administrative unit only
+    role_scopes: tuple[tuple[str, str], ...] = field(default=(), compare=False)
+
+    def scopes_for(self, role_name: str) -> tuple[str, ...]:
+        """The scopes at which the group holds ``role_name`` (tenant-wide when no scope was recorded)."""
+        wanted = role_name.lower()
+        scopes = tuple(scope for name, scope in self.role_scopes if name.lower() == wanted)
+        if not scopes and wanted in (r.lower() for r in self.roles):
+            return (TENANT_SCOPE,)
+        return scopes
+
+    def grants(self, role_name: str, target_scopes: Optional[Collection[str]]) -> Optional[bool]:
+        """Would membership give ``role_name`` over the target? True, False, or None for "can't tell"."""
+        answers = [scope_applies(scope, target_scopes) for scope in self.scopes_for(role_name)]
+        if any(answers):
+            return True
+        return None if any(a is None for a in answers) else False
 
     @property
     def name(self) -> str:            # what PimService._translate and the UIs call it
@@ -54,7 +71,10 @@ class GroupAccess:
 
     @property
     def label(self) -> str:
-        return self.name + (f" - grants {', '.join(self.roles)}" if self.roles else "")
+        def shown(role: str) -> str:
+            scoped = all(scope != TENANT_SCOPE for scope in self.scopes_for(role))
+            return role + (" (one administrative unit only)" if scoped else "")
+        return self.name + (f" - grants {', '.join(shown(r) for r in self.roles)}" if self.roles else "")
 
     @property
     def key(self) -> tuple[str, str]:
@@ -69,7 +89,7 @@ class GroupPimService:
         self._sleep = sleep
         self._me: str | None = None
         self._names: dict[str, str] = {}
-        self._roles: dict[str, tuple[str, ...]] = {}
+        self._roles: dict[str, tuple[tuple[str, str], ...]] = {}
 
     def me(self) -> str:
         if self._me is None:
@@ -87,17 +107,23 @@ class GroupPimService:
                 self._names[group_id] = group_id
         return self._names[group_id]
 
-    def group_roles(self, group_id: str) -> tuple[str, ...]:
-        """Directory roles assigned (active) to the group: what activating its membership gives you."""
+    def group_role_scopes(self, group_id: str) -> tuple[tuple[str, str], ...]:
+        """(role name, directoryScopeId) for each directory role assigned (active) to the group: what
+        activating its membership gives you, and over what."""
         if group_id not in self._roles:
             try:
                 items = self._graph.get_all("/roleManagement/directory/roleAssignments",
                                             filter=f"principalId eq {literal(group_id)}", expand="roleDefinition")
-                self._roles[group_id] = tuple(sorted({(i.get("roleDefinition") or {}).get("displayName")
-                                                      or i.get("roleDefinitionId", "?") for i in items}))
+                self._roles[group_id] = tuple(sorted({
+                    ((i.get("roleDefinition") or {}).get("displayName") or i.get("roleDefinitionId", "?"),
+                     i.get("directoryScopeId") or TENANT_SCOPE) for i in items}))
             except GraphError:
                 self._roles[group_id] = ()
         return self._roles[group_id]
+
+    def group_roles(self, group_id: str) -> tuple[str, ...]:
+        """The names of the directory roles the group holds (at any scope)."""
+        return tuple(sorted({name for name, _scope in self.group_role_scopes(group_id)}))
 
     def _access(self, item: dict[str, Any], state: str, *, with_roles: bool) -> GroupAccess:
         group_id = str(item["groupId"])
@@ -105,7 +131,8 @@ class GroupPimService:
             group_id=group_id, group_name=self.group_name(group_id), access=str(item.get("accessId", "member")),
             state=state, ends=_to_dt(item.get("endDateTime")),
             activated=str(item.get("assignmentType", "")).lower() == "activated",
-            roles=self.group_roles(group_id) if with_roles else ())
+            roles=self.group_roles(group_id) if with_roles else (),
+            role_scopes=self.group_role_scopes(group_id) if with_roles else ())
 
     # -- listing ------------------------------------------------------------------------------ #
 
@@ -127,18 +154,24 @@ class GroupPimService:
         return self._list(ACTIVE_PATH, "active", with_roles)
 
     @staticmethod
-    def granting(eligible: Iterable[GroupAccess], role_names: Iterable[str],
-                 active: Iterable[GroupAccess] = ()) -> list[GroupAccess]:
-        """Eligible *memberships* whose group holds one of ``role_names`` (in that order of preference),
-        skipping ones already active. Ownership doesn't give a group's roles, so it never counts."""
+    def granting(eligible: Iterable[GroupAccess], role_names: Iterable[str], active: Iterable[GroupAccess] = (),
+                 target_scopes: Optional[Collection[str]] = None) -> list[GroupAccess]:
+        """Eligible *memberships* whose group holds one of ``role_names`` (in that order of preference) over
+        the target, skipping ones already active. Ownership doesn't give a group's roles, so it never counts.
+        A group that holds the role for an administrative unit only counts when the target is in that unit;
+        when the target's units are unknown (``target_scopes=None``) such groups come last."""
         active_keys = {a.key for a in active}
         candidates = [a for a in eligible if a.access == "member" and a.key not in active_keys]
-        ordered: list[GroupAccess] = []
+        sure: list[GroupAccess] = []
+        unsure: list[GroupAccess] = []
         for name in role_names:
             for access in candidates:
-                if name.lower() in (r.lower() for r in access.roles) and access not in ordered:
-                    ordered.append(access)
-        return ordered
+                grants = access.grants(name, target_scopes)
+                if grants and access not in sure:
+                    sure.append(access)
+                elif grants is None and access not in unsure:
+                    unsure.append(access)
+        return sure + [a for a in unsure if a not in sure]
 
     # -- activation --------------------------------------------------------------------------- #
 

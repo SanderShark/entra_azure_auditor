@@ -14,9 +14,9 @@ Permissions: RoleEligibilitySchedule.Read.Directory, RoleAssignmentSchedule.Read
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Collection, Iterable, Optional
 
 from ..graph.client import GraphClient, GraphError, GraphPermissionError
 
@@ -28,6 +28,31 @@ REQUEST_PATH = "/roleManagement/directory/roleAssignmentScheduleRequests"
 _ACTIVE_STATUSES = {"granted", "provisioned", "pendingprovisioning", "pendingevaluation",
                     "pendingschedulecreation", "schedulecreated", "accepted"}
 _PENDING_APPROVAL = {"pendingapproval", "pendingapprovalprovisioning"}
+
+
+TENANT_SCOPE = "/"
+AU_SCOPE_PREFIX = "/administrativeUnits/"
+
+
+def is_tenant_wide(scope: Optional[str]) -> bool:
+    return (scope or TENANT_SCOPE) == TENANT_SCOPE
+
+
+def scope_applies(scope: Optional[str], target_scopes: Optional[Collection[str]]) -> Optional[bool]:
+    """Does a role assigned at ``scope`` cover the object being changed?
+
+    ``target_scopes`` are the scopes that contain the target: "/" plus one "/administrativeUnits/<id>" per
+    unit it is a member of; ``None`` when its units couldn't be read. A role scoped to an administrative
+    unit manages that unit's members only (never the unit itself, and never the members of a group that is
+    in the unit). Returns True, False, or None for "can't tell" (unknown is not "no").
+    """
+    if is_tenant_wide(scope):
+        return True
+    if not str(scope).startswith(AU_SCOPE_PREFIX):
+        return False                     # scoped to one app registration or similar: not what plans change
+    if target_scopes is None:
+        return None
+    return scope in target_scopes
 
 
 class PimError(Exception):
@@ -46,10 +71,19 @@ class PimRole:
     state: str = "eligible"             # eligible | active
     ends: datetime | None = None
     activated: bool = False             # active through a PIM activation (vs a standing assignment)
+    scope_name: Optional[str] = field(default=None, compare=False)   # the administrative unit's name, if known
+
+    @property
+    def tenant_wide(self) -> bool:
+        return is_tenant_wide(self.scope)
 
     @property
     def label(self) -> str:
-        return self.name if self.scope in ("/", "") else f"{self.name} (scope {self.scope})"
+        if self.tenant_wide:
+            return self.name
+        if self.scope.startswith(AU_SCOPE_PREFIX):
+            return f"{self.name} (administrative unit {self.scope_name or self.scope[len(AU_SCOPE_PREFIX):]} only)"
+        return f"{self.name} (scope {self.scope})"
 
 
 @dataclass(frozen=True)
@@ -143,13 +177,27 @@ class PimService:
     # -- choosing ----------------------------------------------------------- #
 
     @staticmethod
-    def match(eligible: Iterable[PimRole], names: Iterable[str],
-              active: Iterable[PimRole] = ()) -> list[PimRole]:
-        """Eligible roles named in ``names`` (in that order of preference), skipping ones that are
-        already active."""
-        active_ids = {r.role_id for r in active}
-        by_name = {r.name.lower(): r for r in eligible if r.role_id not in active_ids}
-        return [by_name[n.lower()] for n in names if n.lower() in by_name]
+    def match(eligible: Iterable[PimRole], names: Iterable[str], active: Iterable[PimRole] = (),
+              target_scopes: Optional[Collection[str]] = None) -> list[PimRole]:
+        """Eligible roles named in ``names`` (in that order of preference) that cover the target, skipping
+        ones already active at the same scope. A role can be eligible both tenant-wide and scoped to an
+        administrative unit: the tenant-wide one comes first, and a scoped one is only returned when the
+        target is in that unit (see ``scope_applies``). When the target's units are unknown
+        (``target_scopes=None``), scoped roles can't be ruled out and are returned last."""
+        eligible = list(eligible)
+        active_keys = {(r.role_id, r.scope or TENANT_SCOPE) for r in active}
+        sure: list[PimRole] = []
+        unsure: list[PimRole] = []
+        for name in names:
+            same = [r for r in eligible if r.name.lower() == name.lower()
+                    and (r.role_id, r.scope or TENANT_SCOPE) not in active_keys]
+            for role in sorted(same, key=lambda r: not r.tenant_wide):       # stable: tenant-wide first
+                applies = scope_applies(role.scope, target_scopes)
+                if applies and role not in sure:
+                    sure.append(role)
+                elif applies is None and role not in unsure:
+                    unsure.append(role)
+        return sure + unsure
 
     @staticmethod
     def find(roles: Iterable[PimRole], text: str) -> PimRole:
@@ -202,11 +250,14 @@ class PimService:
             raise self._translate(exc, role) from exc
         return ActivationResult(str(response.body.get("status", "Revoked")), role, response.body.get("id"))
 
-    def wait_until_active(self, role_id: str, timeout: float = 90.0, interval: float = 3.0) -> bool:
-        """Poll until the role shows as active (activation is asynchronous)."""
+    def wait_until_active(self, role_id: str, timeout: float = 90.0, interval: float = 3.0, *,
+                          scope: Optional[str] = None) -> bool:
+        """Poll until the role shows as active (activation is asynchronous). Pass ``scope`` to wait for
+        that assignment specifically: the same role may already be active at another scope."""
         waited = 0.0
         while True:
-            if any(r.role_id == role_id for r in self.active()):
+            if any(r.role_id == role_id and (scope is None or (r.scope or TENANT_SCOPE) == (scope or TENANT_SCOPE))
+                   for r in self.active()):
                 return True
             if waited >= timeout:
                 return False

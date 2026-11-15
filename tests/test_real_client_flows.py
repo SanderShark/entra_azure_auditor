@@ -128,3 +128,20 @@ def test_administrative_unit_changes_use_the_documented_requests(tmp_path):
         ("DELETE", "/v1.0/directory/administrativeUnits/au1/members/u1/$ref", None),
         ("PATCH", "/v1.0/directory/administrativeUnits/au1", {"description": "Office"}),
     ]
+
+
+def test_looking_up_a_targets_administrative_units_is_a_plain_memberof_read():
+    from entra_auditor.toolkit.admin_units import admin_units_of
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, dict(request.url.params), request.headers.get("ConsistencyLevel")))
+        return httpx.Response(200, json={"value": [
+            {"@odata.type": "#microsoft.graph.group", "id": "g1", "displayName": "Finance"},
+            {"@odata.type": "#microsoft.graph.administrativeUnit", "id": "au1", "displayName": "Seattle"},
+            {"@odata.type": "#microsoft.graph.directoryRole", "id": "dr1", "displayName": "Helpdesk Administrator"}]})
+
+    assert admin_units_of(client_for(handler), "user", "u1") == {"au1": "Seattle"}
+    assert admin_units_of(client_for(handler), "group", "g1") == {"au1": "Seattle"}
+    assert [(m, p) for m, p, _q, _h in seen] == [("GET", "/v1.0/users/u1/memberOf"), ("GET", "/v1.0/groups/g1/memberOf")]
+    assert seen[0][2]["$select"] == "id,displayName" and seen[0][3] is None   # no cast: no advanced query needed

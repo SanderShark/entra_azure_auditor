@@ -212,3 +212,14 @@ def test_a_device_is_added_by_its_object_id_not_its_hardware_id():
 def test_restricted_units_accept_devices():
     device = AuMember(id="dev-1", kind="device", name="SEA-LT-001")
     assert actions.plan_add_au_members(RESTRICTED, [device]).requests
+
+
+def test_the_units_an_object_is_in_come_from_its_direct_memberships():
+    from entra_auditor.toolkit.admin_units import admin_units_of
+    t = FakeTenant().add_admin_unit("au-1", "Seattle", members=("u-bob", "g-fin")).add_admin_unit("au-2", "Empty")
+    assert admin_units_of(t, "user", "u-bob") == {"au-1": "Seattle"}     # his group (g-fin) is not a unit
+    assert admin_units_of(t, "group", "g-fin") == {"au-1": "Seattle"}
+    assert admin_units_of(t, "user", "u-alice") == {}
+    t.memberof_denied = True
+    with pytest.raises(GraphError):
+        admin_units_of(t, "user", "u-bob")

@@ -51,6 +51,12 @@ class FakeTenant:
         self.au_members = {}
         self.au_roles = []           # (au id, role name, principal id, 'active'|'eligible')
         self.au_scope_filter_supported = True
+        # PIM roles scoped to an administrative unit (opt-in; see add_scoped_eligibility):
+        # eligible [(role name, au id)], active {(role id, scope): role name}
+        self.scoped_eligible = []
+        self.scoped_active = {}
+        self.group_role_scope = {}   # group id -> directoryScopeId of the roles it holds (default '/')
+        self.memberof_denied = False # True: memberOf answers 403 (the target's AUs can't be read)
         # device objects: id = directory object id, deviceId = hardware id (deliberately different)
         self.devices = {
             'dev-1': {'id': 'dev-1', 'deviceId': 'hw-1111', 'displayName': 'SEA-LT-001', 'operatingSystem': 'Windows',
@@ -61,12 +67,33 @@ class FakeTenant:
                       'operatingSystemVersion': '10.0.19045', 'accountEnabled': False, 'trustType': 'ServerAd'},
         }
 
-    def add_pim_group(self, gid, name, roles=(), access='member', role_assignable=True):
-        """A group you are eligible for (membership by default) that holds `roles`."""
+    def add_pim_group(self, gid, name, roles=(), access='member', role_assignable=True, au=None):
+        """A group you are eligible for (membership by default) that holds `roles`, tenant-wide or scoped
+        to the administrative unit `au`."""
         self.groups[gid] = G(gid, name, isAssignableToRole=role_assignable)
         self.group_eligible.append((gid, access))
         self.group_roles[gid] = list(roles)
+        if au:
+            self.group_role_scope[gid] = f'/administrativeUnits/{au}'
         return self
+
+    def add_scoped_eligibility(self, role, au_id):
+        """Make the signed-in user eligible for `role` scoped to one administrative unit only."""
+        self.scoped_eligible.append((role, au_id))
+        self.role_ids.setdefault(role, f"r-{role.lower().replace(' ', '-')}")
+        return self
+
+    def _in_scope(self, scope, target):
+        if scope in ('/', ''):
+            return True
+        au = scope.rsplit('/', 1)[-1]
+        return scope.startswith('/administrativeUnits/') and target is not None and target in self.au_members.get(au, set())
+
+    def _admin_units_of(self, oid):
+        for au, members in self.au_members.items():
+            if oid in members:
+                yield {'id': au, 'displayName': self.admin_units[au]['displayName'],
+                       '@odata.type': '#microsoft.graph.administrativeUnit'}
 
     def add_admin_unit(self, au_id, name, members=(), **props):
         self.admin_units[au_id] = {'id': au_id, 'displayName': name, 'description': props.pop('description', None),
@@ -86,12 +113,16 @@ class FakeTenant:
         return {'id': oid, '@odata.type': '#microsoft.graph.device', 'displayName': oid, 'operatingSystem': 'Windows',
                 'accountEnabled': True}
 
-    def _granted_by_groups(self):
-        return {r for (gid, access) in self.group_active if access == 'member' for r in self.group_roles.get(gid, [])}
+    def _granted_by_groups(self, target=None):
+        return {r for (gid, access) in self.group_active if access == 'member'
+                and self._in_scope(self.group_role_scope.get(gid, '/'), target) for r in self.group_roles.get(gid, [])}
 
-    # ---- permission model: writes need an activated role (after any propagation delay) ----
-    def _need_role(self):
-        if not self.active_roles and not (self._granted_by_groups() & self.ROLE_FOR_WRITES):
+    # ---- permission model: writes need an activated role (after any propagation delay). A role scoped to
+    # an administrative unit only counts when the object being changed (`target`) is a member of that unit;
+    # it never counts for changing the unit itself ----
+    def _need_role(self, target=None):
+        scoped = any(self._in_scope(scope, target) for (_rid, scope) in self.scoped_active)
+        if not self.active_roles and not scoped and not (self._granted_by_groups(target) & self.ROLE_FOR_WRITES):
             raise GraphPermissionError('Authorization_RequestDenied: Insufficient privileges to complete the operation.', status_code=403, code='Authorization_RequestDenied')
         if self._denied_after_activation > 0:
             self._denied_after_activation -= 1
@@ -157,10 +188,16 @@ class FakeTenant:
                 for uid in sorted(store.get(oid, set())):
                     yield {**self.users[uid], '@odata.type': '#microsoft.graph.user'}
                 return
+            if edge == 'memberOf' and self.memberof_denied:
+                raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
             if kind == 'users' and edge == 'memberOf':
                 for gid, ms in self.members.items():
                     if oid in ms:
                         yield {**self.groups[gid], '@odata.type': '#microsoft.graph.group'}
+                yield from self._admin_units_of(oid)
+                return
+            if kind == 'groups' and edge == 'memberOf':
+                yield from self._admin_units_of(oid)
                 return
             if kind == 'users' and edge == 'ownedObjects':
                 for gid, ms in self.owners.items():
@@ -185,7 +222,8 @@ class FakeTenant:
             for gid, names in self.group_roles.items():
                 if gid in flt:
                     for n in names:
-                        yield {'roleDefinitionId': self.role_ids.get(n, n), 'roleDefinition': {'displayName': n}}
+                        yield {'roleDefinitionId': self.role_ids.get(n, n), 'roleDefinition': {'displayName': n},
+                               'directoryScopeId': self.group_role_scope.get(gid, '/')}
             return
         if path in ('/roleManagement/directory/roleAssignments', '/roleManagement/directory/roleEligibilitySchedules'):
             if 'u-admin' in flt:
@@ -194,10 +232,17 @@ class FakeTenant:
         if path.startswith('/roleManagement/directory/roleEligibilitySchedules/filterByCurrentUser'):
             for n in self.eligible_names:
                 yield {'roleDefinitionId': self.role_ids[n], 'roleDefinition': {'displayName': n}, 'directoryScopeId': '/', 'scheduleInfo': {'expiration': {'endDateTime': '2027-01-01T00:00:00Z'}}}
+            for n, au in self.scoped_eligible:
+                yield {'roleDefinitionId': self.role_ids[n], 'roleDefinition': {'displayName': n},
+                       'directoryScopeId': f'/administrativeUnits/{au}',
+                       'scheduleInfo': {'expiration': {'endDateTime': '2027-01-01T00:00:00Z'}}}
             return
         if path.startswith('/roleManagement/directory/roleAssignmentScheduleInstances/filterByCurrentUser'):
             for rid, n in self.active_roles.items():
                 yield {'roleDefinitionId': rid, 'roleDefinition': {'displayName': n}, 'directoryScopeId': '/', 'assignmentType': 'Activated', 'endDateTime': '2026-10-06T10:00:00Z'}
+            for (rid, scope), n in self.scoped_active.items():
+                yield {'roleDefinitionId': rid, 'roleDefinition': {'displayName': n}, 'directoryScopeId': scope,
+                       'assignmentType': 'Activated', 'endDateTime': '2026-10-06T10:00:00Z'}
             return
         if path == '/roleManagement/directory/roleDefinitions':
             for n, rid in self.role_ids.items():
@@ -254,7 +299,8 @@ class FakeTenant:
         if path == '/identityGovernance/privilegedAccess/group/assignmentScheduleRequests':
             return self._group_pim(json)
         self.writes.append((method, path, json))
-        self._need_role()
+        target = re.match('/(?:users|groups)/([^/]+)', path)
+        self._need_role(target.group(1) if target else None)
         m = re.match('/groups/([^/]+)/(members|owners)/\\$ref$', path)
         if m and method == 'POST':
             gid, edge = m.groups()
@@ -326,9 +372,21 @@ class FakeTenant:
     def _pim(self, body):
         self.writes.append(('POST', 'pim', body))
         name = next((n for n, rid in self.role_ids.items() if rid == body['roleDefinitionId']), None)
+        scope = body.get('directoryScopeId') or '/'
         if body['action'] == 'selfDeactivate':
-            self.active_roles.pop(body['roleDefinitionId'], None)
+            if scope == '/':
+                self.active_roles.pop(body['roleDefinitionId'], None)
+            else:
+                self.scoped_active.pop((body['roleDefinitionId'], scope), None)
             return GraphResponse(201, {}, {'id': 'req2', 'status': 'Revoked'})
+        if scope != '/':
+            if (name, scope.rsplit('/', 1)[-1]) not in self.scoped_eligible:
+                raise GraphPermissionError('403 not eligible', status_code=403, code='Authorization_RequestDenied')
+            if not body.get('justification'):
+                raise GraphError('The following policy rules failed: ["JustificationRule"]', status_code=400, code='RoleAssignmentRequestPolicyValidationFailed')
+            self.scoped_active[(body['roleDefinitionId'], scope)] = name
+            self._denied_after_activation = self.propagation
+            return GraphResponse(201, {}, {'id': 'req1', 'status': 'Granted'})
         if name not in self.eligible_names:
             raise GraphPermissionError('403 not eligible', status_code=403, code='Authorization_RequestDenied')
         if name in self.require_mfa:

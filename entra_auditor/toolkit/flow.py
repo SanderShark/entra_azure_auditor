@@ -21,13 +21,14 @@ from __future__ import annotations
 
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, ContextManager, Literal, Mapping, Optional, Protocol, Union
 
 from ..graph.client import GraphError
 from .actions import ActionPlan, ActionResult, execute_plan
+from .admin_units import admin_units_of
 from .group_pim import GroupAccess, GroupPimService
-from .pim import PimError, PimRole, PimService
+from .pim import AU_SCOPE_PREFIX, TENANT_SCOPE, PimError, PimRole, PimService, scope_applies
 
 RETRY_ATTEMPTS = 4         # tries after an elevation (the role takes a moment to take effect)
 RETRY_WAIT = 8.0           # seconds between those tries
@@ -138,7 +139,8 @@ def activate_and_wait(sess: Any, pim: Any, role: Candidate, reason: str, minutes
         rep.notice(Notice("warning", f"{role.name} needs approval; the request was sent to the approvers."))
         return False
     with rep.busy(f"Waiting for {role.name} to become active..."):
-        active = pim.wait_until_active(role) if isinstance(role, GroupAccess) else pim.wait_until_active(role.role_id)
+        active = (pim.wait_until_active(role) if isinstance(role, GroupAccess)
+                  else pim.wait_until_active(role.role_id, scope=role.scope))
     if not active:
         rep.notice(Notice("warning", f"{role.name} was requested but isn't showing as active yet; try again shortly."))
         return False
@@ -272,6 +274,19 @@ class ChangeFlow:
     def _say(self, level: Level, text: str) -> None:
         self.reporter.notice(Notice(level, text))
 
+    def _target_units(self) -> Optional[dict[str, str]]:
+        """{id: name} of the administrative units the plan's target is in; None when they can't be read.
+        Only users and groups are looked up: a role scoped to a unit manages the unit's members, never the
+        unit itself, so for any other target no scoped role applies."""
+        if self.plan.target_type not in ("user", "group"):
+            return {}
+        try:
+            return admin_units_of(self.sess.graph, self.plan.target_type, self.plan.target_id)
+        except GraphError:
+            self._say("info", f"Couldn't check which administrative units {self.plan.target_name} is in, so roles "
+                              "scoped to one unit are offered too; they only work if it is in that unit.")
+            return None
+
     def _after_denied(self) -> Step:
         """Work out whether an elevation can be offered, and offer it."""
         plan, denied = self.plan, self._denied
@@ -290,22 +305,46 @@ class ChangeFlow:
 
         wanted = {n.lower() for n in plan.suggested_roles}
         groups_eligible, groups_active = self._read_groups()
-        already: list[Candidate] = [r for r in active if r.name.lower() in wanted]
-        already += [g for g in groups_active if g.access == "member" and wanted & {r.lower() for r in g.roles}]
+
+        # A role (or a group's role) can be scoped to one administrative unit: it then only helps when the
+        # target is in that unit. Look the target's units up only when such a role is in play.
+        scoped_roles = [r for r in [*eligible, *active] if r.name.lower() in wanted and not r.tenant_wide]
+        scoped_groups = [g for g in [*groups_eligible, *groups_active] if g.access == "member"
+                         and any(n.lower() in wanted and s != TENANT_SCOPE for n, s in g.role_scopes)]
+        units: Optional[dict[str, str]] = {}
+        if scoped_roles or scoped_groups:
+            units = self._target_units()
+        scopes = None if units is None else frozenset({TENANT_SCOPE} | {AU_SCOPE_PREFIX + u for u in units})
+
+        already: list[Candidate] = [r for r in active if r.name.lower() in wanted and scope_applies(r.scope, scopes)]
+        already += [g for g in groups_active if g.access == "member"
+                    and any(g.grants(name, scopes) for name in plan.suggested_roles)]
         if already:
             self._say("info", f"You already have {already[0].name} active; refreshing your token and retrying.")
             self.sess.refresh()
             return self._retry()
 
-        matches: list[Candidate] = list(PimService.match(eligible, plan.suggested_roles, active))
-        matches += GroupPimService.granting(groups_eligible, plan.suggested_roles, groups_active)
+        matches: list[Candidate] = [self._named(r, units) for r in
+                                    PimService.match(eligible, plan.suggested_roles, active, scopes)]
+        matches += GroupPimService.granting(groups_eligible, plan.suggested_roles, groups_active, scopes)
         if not matches:
             self._say("info", "You aren't eligible for any role that can do this ("
                               + ", ".join(plan.suggested_roles) + ").")
+            outside = sorted({r.name for r in scoped_roles if r.state == "eligible"}
+                             | {g.name for g in scoped_groups if g.state == "eligible"})
+            if outside:
+                self._say("info", ", ".join(outside) + ": scoped to an administrative unit that "
+                                  f"{plan.target_name} isn't in, so it can't be used for this change.")
             if eligible:
-                self._say("info", "You are eligible for: " + ", ".join(r.name for r in eligible))
+                self._say("info", "You are eligible for: " + ", ".join(r.label for r in eligible))
             return self._done(denied)
         return self._go(NeedsElevation(plan, tuple(matches), self.minutes))
+
+    @staticmethod
+    def _named(role: PimRole, units: Optional[dict[str, str]]) -> PimRole:
+        """The role with its administrative unit's name filled in (for the label), when we know it."""
+        name = (units or {}).get(role.scope[len(AU_SCOPE_PREFIX):]) if role.scope.startswith(AU_SCOPE_PREFIX) else None
+        return replace(role, scope_name=name) if name else role
 
     def _retry(self) -> Step:
         """Retry after an elevation: the role can take a little while to show up in the token."""
