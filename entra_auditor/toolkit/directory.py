@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from .models import UserSummary
-from .search import USER_SELECT, _user
+from .models import GroupSummary, UserSummary
+from .search import GROUP_SELECT, USER_SELECT, _group, _user
 
 PAGE_SIZE = 999   # the largest page Graph allows for /users
 
@@ -41,3 +41,10 @@ def load_users(
         on_progress(len(users))
     users.sort(key=lambda u: ((u.display_name or u.label).casefold(), u.label.casefold()))
     return users
+
+
+def load_groups(graph: Any, *, page_size: int = PAGE_SIZE) -> list[GroupSummary]:
+    """Every group in the tenant (few properties), sorted by name. Raises on failure, like load_users."""
+    groups = [_group(raw) for raw in graph.get_paged("/groups", select=GROUP_SELECT, top=page_size)]
+    groups.sort(key=lambda g: (g.label.casefold(), g.id))
+    return groups

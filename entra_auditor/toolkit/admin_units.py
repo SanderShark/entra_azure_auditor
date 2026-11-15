@@ -45,6 +45,7 @@ class AdminUnit(BaseModel):
     processing_state: str | None = None         # "On" | "Paused"
     restricted: bool | None = None              # isMemberManagementRestricted (immutable)
     visibility: str | None = None               # "HiddenMembership" | None (= public)
+    settings_known: bool = True                 # False when only the basic properties could be read
 
     @property
     def label(self) -> str:
@@ -104,7 +105,8 @@ def _unit(raw: dict[str, Any]) -> AdminUnit:
         id=raw["id"], display_name=raw.get("displayName"), description=raw.get("description"),
         membership_type=raw.get("membershipType"), membership_rule=raw.get("membershipRule"),
         processing_state=raw.get("membershipRuleProcessingState"),
-        restricted=raw.get("isMemberManagementRestricted"), visibility=raw.get("visibility"))
+        restricted=raw.get("isMemberManagementRestricted"), visibility=raw.get("visibility"),
+        settings_known=not raw.get("_basic"))
 
 
 def _kind(raw: dict[str, Any]) -> str:
@@ -139,7 +141,7 @@ def list_admin_units(graph: Any) -> tuple[list[AdminUnit], list[str]]:
         if _hard(exc) or exc.status_code != 400:
             raise
         warnings.append(f"Some administrative unit settings couldn't be read ({exc}); showing names only.")
-        raw = graph.get_all(AU_PATH, select=AU_BASIC_SELECT, top=999)
+        raw = [{**r, "_basic": True} for r in graph.get_all(AU_PATH, select=AU_BASIC_SELECT, top=999)]
     units = [_unit(r) for r in raw]
     units.sort(key=lambda u: u.label.casefold())
     return units, warnings

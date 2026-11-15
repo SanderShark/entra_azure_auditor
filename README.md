@@ -207,8 +207,19 @@ Each tenant keeps its own token cache (`~/.entra_auditor/tenants/<tenant id>.tok
 registration needs **Allow public client flows** for device code, and the `http://localhost` redirect URI
 (Mobile and desktop platform) for browser sign-in.
 
-So far: sign-in, the user list (whole directory loaded once, filtered as you type), the General tab, and
-enable/disable. Groups, roles, audit and the action log come next.
+So far:
+- **Users:** whole directory loaded once and filtered as you type; General, Groups, Sign-in methods,
+  Certificate IDs and Roles tabs; enable/disable.
+- **Administrative units:** units on the left, members in the middle, settings and scoped roles on the right
+  (like OUs in ADUC, but AUs don't nest); add/remove users and groups, edit name, description and
+  dynamic membership.
+- **Roles / PIM:** your directory roles and PIM for Groups assignments, with activate/deactivate. When a
+  change is denied, the app also offers PIM groups whose membership carries the needed role.
+
+Optional permissions for the app registration (with admin consent): `PrivilegedEligibilitySchedule.Read.AzureADGroup`
+and `PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup` for PIM for Groups; `AdministrativeUnit.ReadWrite.All`
+to change administrative units (plus `Member.Read.Hidden` to list hidden-membership units). They aren't requested
+at sign-in, so a missing one only affects that page.
 
 ## Security notes
 

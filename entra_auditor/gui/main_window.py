@@ -1,7 +1,9 @@
-"""Main window, ADUC style: navigation | list | property tabs.
+"""Main window, ADUC style: navigation | page. The Users page is list | property tabs; the
+Administrative units page is units | members | settings; Roles / PIM shows your roles and PIM groups.
 
 The user directory loads once in the background (all pages, ``$select``, ``$top=999``) and is filtered
-locally as you type. Changes go through ``ChangeController`` (preview, confirm, PIM, result).
+locally as you type. Other pages load the first time they are shown. Every change goes through
+``ChangeController`` (preview, confirm, PIM, result), one at a time.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QSplitter,
+    QStackedWidget,
     QTableView,
     QToolBar,
     QVBoxLayout,
@@ -32,14 +35,17 @@ from ..toolkit.actions import PlanError, plan_set_enabled
 from ..toolkit.directory import LoadCancelled, load_users
 from ..toolkit.models import UserSummary
 from ..toolkit.search import get_user
+from .admin_units_page import AdminUnitsPage
 from .change import ChangeController
+from .roles_page import RolesPage
 from .session import GuiSession
 from .tasks import TaskRunner
 from .user_detail import UserDetail
 from .user_model import USER_ROLE, UserFilterProxy, UserTableModel
 
 FILTER_DELAY_MS = 150
-SECTIONS = ("Users", "Groups", "Roles / PIM", "Audit", "Action log")
+SECTIONS = ("Users", "Groups", "Administrative units", "Roles / PIM", "Audit", "Action log")
+READY = ("Users", "Administrative units", "Roles / PIM")
 LATER = "Coming in a later milestone."
 
 
@@ -65,7 +71,7 @@ class MainWindow(QMainWindow):
         self.nav = QListWidget()
         for name in SECTIONS:
             item = QListWidgetItem(name)
-            if name != "Users":
+            if name not in READY:
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
                 item.setToolTip(LATER)
             self.nav.addItem(item)
@@ -105,20 +111,34 @@ class MainWindow(QMainWindow):
         # -- properties ----------------------------------------------------------- #
         self.detail = UserDetail(runner, lambda: self.session.graph)
 
+        self.users_page = QSplitter()
+        self.users_page.addWidget(middle)
+        self.users_page.addWidget(self.detail)
+        self.users_page.setStretchFactor(0, 3)
+        self.users_page.setStretchFactor(1, 2)
+        self.users_page.setSizes([760, 370])
+
+        # -- pages ------------------------------------------------------------------- #
+        self.admin_units_page = AdminUnitsPage(self)
+        self.roles_page = RolesPage(self)
+        self.pages: dict[str, QWidget] = {"Users": self.users_page, "Administrative units": self.admin_units_page,
+                                          "Roles / PIM": self.roles_page}
+        self.stack = QStackedWidget()
+        for page in self.pages.values():
+            self.stack.addWidget(page)
+
         splitter = QSplitter()
         splitter.addWidget(self.nav)
-        splitter.addWidget(middle)
-        splitter.addWidget(self.detail)
-        splitter.setStretchFactor(0, 0)       # the navigation keeps its width; list and details share the rest
-        splitter.setStretchFactor(1, 3)
-        splitter.setStretchFactor(2, 2)
-        splitter.setSizes([150, 760, 370])
+        splitter.addWidget(self.stack)
+        splitter.setStretchFactor(0, 0)       # the navigation keeps its width; the page takes the rest
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([150, 1130])
         self.setCentralWidget(splitter)
 
         # -- actions --------------------------------------------------------------- #
         self.refresh_action = QAction("Reload directory", self)
         self.refresh_action.setShortcut(QKeySequence.StandardKey.Refresh)
-        self.refresh_action.triggered.connect(self.load_directory)
+        self.refresh_action.triggered.connect(self.reload_current_page)
         self.toggle_action = QAction("Disable account", self)
         self.toggle_action.setEnabled(False)
         self.toggle_action.triggered.connect(self.toggle_selected_account)
@@ -144,7 +164,49 @@ class MainWindow(QMainWindow):
         self.proxy.modelReset.connect(self._update_count)
         self.proxy.layoutChanged.connect(self._update_count)
         self.load_progress.connect(self._on_progress)
+        self.nav.currentRowChanged.connect(self._section_changed)
         self._update_count()
+
+    # -- pages ----------------------------------------------------------------------- #
+
+    @property
+    def current_section(self) -> str:
+        item = self.nav.currentItem()
+        return item.text() if item else "Users"
+
+    def show_section(self, name: str) -> None:
+        self.nav.setCurrentRow(SECTIONS.index(name))
+
+    def _section_changed(self, row: int) -> None:
+        name = SECTIONS[row] if 0 <= row < len(SECTIONS) else "Users"
+        page = self.pages.get(name)
+        if page is None:
+            return
+        self.stack.setCurrentWidget(page)
+        on_users = page is self.users_page
+        self.toggle_action.setVisible(on_users)
+        self.refresh_action.setText("Reload directory" if on_users else "Reload")
+        self.refresh_action.setEnabled(not self.loading if on_users else True)
+        activate = getattr(page, "activate_page", None)
+        if activate is not None:
+            activate()
+
+    @Slot()
+    def reload_current_page(self) -> None:
+        page = self.stack.currentWidget()
+        if page is self.users_page:
+            self.load_directory()
+        else:
+            page.reload()
+
+    def show_user(self, user_id: str) -> bool:
+        """Open a user on the Users page (e.g. double-clicked in an administrative unit)."""
+        self.show_section("Users")
+        if not self.select_user(user_id):
+            self.filter_edit.clear()
+            self.apply_filter()
+            return self.select_user(user_id)
+        return True
 
     # -- directory ------------------------------------------------------------------ #
 
@@ -261,15 +323,21 @@ class MainWindow(QMainWindow):
             return
         self.start_change(plan, user)
 
-    def start_change(self, plan: Any, user: Optional[UserSummary] = None) -> ChangeController:
+    def start_change(self, plan: Any, user: Optional[UserSummary] = None, *,
+                     on_finished: Optional[Callable[[Any], None]] = None) -> Optional[ChangeController]:
+        """Run a change through the dialogs. One at a time: returns None if another is still running."""
+        if self.change is not None:
+            QMessageBox.information(self, "Another change is running", "Finish the current change first.")
+            return None
         controller = ChangeController(self.session, plan, self.runner, self, sleep=self._change_sleep)
         self.change = controller
         self._update_actions(self.selected_user())
-        controller.finished.connect(lambda done: self._change_finished(done, user))
+        controller.finished.connect(lambda done: self._change_finished(done, user, on_finished))
         controller.start()
         return controller
 
-    def _change_finished(self, done: Any, user: Optional[UserSummary]) -> None:
+    def _change_finished(self, done: Any, user: Optional[UserSummary],
+                         on_finished: Optional[Callable[[Any], None]] = None) -> None:
         self.change_done = done
         self.change = None
         if done.cancelled:
@@ -279,6 +347,8 @@ class MainWindow(QMainWindow):
         if user is not None and done.result.status in ("ok", "partial"):
             self._refresh_user(user.id)
         self._update_actions(self.selected_user())
+        if on_finished is not None:
+            on_finished(done)
 
     def _refresh_user(self, user_id: str) -> None:
         graph = self.session.graph

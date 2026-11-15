@@ -45,7 +45,7 @@ def test_if_the_full_settings_are_rejected_names_still_load_with_a_warning():
         return [{"id": "au1", "displayName": "Seattle"}]
 
     found, warnings = list_admin_units(FakeGraph({"/directory/administrativeUnits": units}))
-    assert [u.label for u in found] == ["Seattle"] and found[0].restricted is None   # unknown, not False
+    assert [u.label for u in found] == ["Seattle"] and not found[0].settings_known   # unknown, not "no"
     assert warnings and "names only" in warnings[0]
 
 

@@ -38,12 +38,13 @@ entra_auditor/
                        passwords, odata (escaping), audit_log, cli (commands + menu),
                        flow (the change flow as a UI-independent state machine),
                        ui (Rich rendering + `run_action`, the terminal driver for flow),
-                       directory (load all users once for local filtering)
+                       directory (load all users/groups once for local filtering),
+                       group_pim (PIM for Groups), admin_units (AU reads; AU plans live in actions)
   gui/                 PySide6 desktop app (`auditor gui`, optional extra `.[gui]`): tasks (thread pool ->
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
-                       main_window, app
+                       pickers, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~690 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~770 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -91,6 +92,9 @@ tests/                 ~690 tests, no network; fakes.py, builders.py, conftest.p
 - `requires-python` is 3.10: no 3.12-only syntax (e.g. reusing the outer quote inside an f-string).
 - Qt: a signal connected to a plain Python callable runs it in the EMITTING thread. Worker results go through
   `gui/tasks.py TaskRunner` (a relay to a QObject on the UI thread); never update widgets from a worker.
+- New permissions (PIM for Groups, AdministrativeUnit.ReadWrite.All) are deliberately NOT added to
+  TOOLKIT_SCOPES: requesting an unconsented scope breaks sign-in for every command. Pages explain a 403 instead.
+- The change preview must show everything that will be sent: request bodies wrap, never elide (tested).
 - Qt makes a dialog's first accept button the default on show: the change preview forced Cancel back as the
   default (Enter must never apply a change). Keep that test.
 
@@ -101,7 +105,12 @@ Verified live: app-mode audit run, `id search`, `pim list`, password reset (Entr
 **Not yet verified live:** PIM activation (the test tenant had no eligible roles) **including the desktop
 app's elevation dialogs** (`gui/change.py`: role choice, justification, wait, retry; built and tested against
 `FakeTenant` only, the owner will test in a production tenant), the desktop app's sign-in (device code and
-browser through `gui/session.py`) and its directory load at scale, group add/remove after the
+browser through `gui/session.py`) and its directory load at scale, **PIM for Groups** (`toolkit/group_pim.py`,
+the Roles / PIM page and group candidates in the elevation flow), **administrative units** (`toolkit/admin_units.py`,
+the AU plans in `actions.py`, the AU page; in particular whether `$filter=directoryScopeId eq '/administrativeUnits/..'`
+works on roleAssignments/roleEligibilitySchedules, which has a scopedRoleMembers fallback), and the assumption
+that permissions consented on the app registration but not requested at sign-in (PIM for Groups, AU writes)
+still appear in the token, group add/remove after the
 0.2.3 fix, certificate-ID writes, the group audit's `$expand` behaviour at scale, and the `$expand` on the PIM
 `filterByCurrentUser` listings. Treat these as the first things to test in a real tenant.
 
@@ -118,9 +127,11 @@ pydantic 2.14, Typer 0.29, Rich 14.3, questionary 2.1, httpx 0.28, MSAL 1.39). P
    waits, so the GUI calls it from a worker. `ui.run_action` is the terminal driver; tests in `tests/test_flow.py`.
 3. **Qt desktop app** (`entra_auditor/gui/`, PySide6, `auditor gui` command). Milestone 1 done on branch `gui`:
    sign-in dialog (tenants.json, device code with copy/open/cancel, browser with a 5-minute timeout), Users list
-   (background load, type-to-filter), General tab, enable/disable through the flow dialogs. Next: the other
-   property tabs (reuse the profile `user_detail` already loads), Groups, Roles/PIM, Audit, Action log,
-   tenant switcher. Remaining design notes:
+   (background load, type-to-filter), General tab, enable/disable through the flow dialogs. Since then: all user
+   property tabs; Roles / PIM page (directory roles + PIM for Groups, activate/deactivate); Administrative
+   units page (flat AU list | members | properties + scoped roles; add/remove users and groups, edit settings);
+   group memberships offered as elevation candidates. Next: role assignment management (owner to decide on
+   writes), Groups page, Audit, Action log, tenant switcher. Remaining design notes:
    - ADUC-style: navigation (Users, Groups, Roles/PIM, Audit, Action log) | list | property tabs
      (General, Groups, Sign-in methods, Certificate IDs, Roles, Activity).
    - Speed: load the directory once in the background (`$select`, `$top=999`, all pages), filter locally as

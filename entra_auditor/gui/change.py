@@ -91,10 +91,11 @@ class PlanDialog(QDialog):
             body = request.redacted_json()          # secrets never reach the screen in a preview
             for col, value in enumerate((request.method, request.path, "-" if body is None else str(body))):
                 self.requests.setItem(row, col, QTableWidgetItem(value))
-        self.requests.resizeRowsToContents()
-        height = self.requests.horizontalHeader().height() + 2 * self.requests.frameWidth()
-        height += sum(self.requests.rowHeight(r) for r in range(len(plan.requests)))
-        self.requests.setFixedHeight(height)
+        # The preview must show everything that will be sent: wrap long bodies, never elide them.
+        self.requests.setWordWrap(True)
+        self.requests.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.requests.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._fit_requests()
         layout.addWidget(_label("Graph requests"))
         layout.addWidget(self.requests)
 
@@ -113,8 +114,20 @@ class PlanDialog(QDialog):
         layout.addWidget(buttons)
         self.cancel_button.setDefault(True)
 
+    def _fit_requests(self) -> None:
+        """Row heights depend on the column widths, which are only final once the dialog is laid out."""
+        self.requests.resizeRowsToContents()
+        height = self.requests.horizontalHeader().height() + 2 * self.requests.frameWidth()
+        height += sum(self.requests.rowHeight(r) for r in range(self.requests.rowCount()))
+        self.requests.setFixedHeight(min(height, 400))
+
     def showEvent(self, event: Any) -> None:  # noqa: N802 - Qt's name
         super().showEvent(event)
+        self._fit_requests()
+        layout = self.layout()
+        layout.activate()
+        self.resize(self.width(), max(self.height(), layout.totalHeightForWidth(self.width())
+                                      if layout.hasHeightForWidth() else layout.sizeHint().height()))
         self.apply_button.setDefault(False)
         self.cancel_button.setDefault(True)
         self.cancel_button.setFocus()
