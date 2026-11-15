@@ -258,6 +258,34 @@ and `DeviceLocalCredential.Read.All` for the recovery secrets on the Devices pag
 such as Cloud Device Administrator). They aren't requested
 at sign-in, so a missing one only affects that page.
 
+## Entra Connect sync rules (offline)
+
+`auditor sync` reads an export of your Entra Connect configuration and helps you understand and change the
+rules safely. It never signs in and never contacts the Connect server or a tenant: it only reads files.
+
+```powershell
+# on the Entra Connect server
+Import-Module ADSync
+Get-ADSyncServerConfiguration -Path C:\Temp\connect-export
+# a population to test against (any AD attributes your rules use)
+Get-ADUser -Filter * -Properties extensionAttribute14 | Export-Csv users.csv -NoTypeInformation
+```
+
+```bash
+auditor sync describe connect-export --custom        # your own rules, in plain English
+auditor sync lint connect-export                     # duplicate precedence, a rule that filters everything, ...
+auditor sync explain connect-export --set extensionAttribute14=no0365sync
+auditor sync explain connect-export --csv users.csv --who jane@contoso.com --excluded-ou "OU=NoSync,DC=contoso,DC=com"
+auditor sync diff connect-export connect-export-changed
+auditor sync impact connect-export connect-export-changed users.csv --max-changes 5
+```
+
+`impact` is the validator: it runs both rule sets over the population and lists who would start or stop
+synchronising, and exits with 1 when that exceeds the limits (by default: any change at all) or when an object
+can't be judged. Limits of this first version: the export's JSON layout has not been confirmed against a real
+export, organisational-unit filtering must be given with `--excluded-ou` (it is connector configuration, not a
+rule), expressions such as `IIF(...)` are shown but not evaluated, and it does not write or edit rules.
+
 ## Security notes
 
 - **Never commit secrets.** `.env`, certificates, token caches and audit output are in `.gitignore`.

@@ -48,12 +48,14 @@ entra_auditor/
                        licences (subscriptions, a user's licences and their source; plan in actions),
                        leaver (offboarding: gather facts, then ONE pure multi-step plan, `plan_leaver`),
                        onboarding (create a user from a template user: `gather_template`, `plan_onboard`),
-                       devices (BitLocker keys and LAPS passwords: read on demand, never logged)
+                       devices (BitLocker keys and LAPS passwords: read on demand, never logged),
+                       syncrules + syncrules_cli (`auditor sync`: Entra Connect rules from an export, OFFLINE:
+                       describe, lint, explain, diff, impact; no Graph, no sign-in)
   gui/                 PySide6 desktop app (`auditor gui`, optional extra `.[gui]`): tasks (thread pool ->
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, leaver (offboarding dialog), onboarding (new-user dialog), groups_page, devices_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~910 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~955 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -124,6 +126,12 @@ tests/                 ~910 tests, no network; fakes.py, builders.py, conftest.p
   size; `gui/user_model.UserFilterProxy` is now a plain model that filters in one pass and caches one sort per
   column (0.1 s). Benchmark anything that touches "all users" at 300k (there is a test). Loading can be
   narrowed with `directory.USER_SCOPES` (server-side `$filter`); 300k `UserSummary` objects cost ~650 MB.
+- Graph can't filter users on `#EXT#` server-side (no `contains` on userPrincipalName), and cross-tenant-synced
+  users are often userType Member: "Hide external" drops them while loading (`directory.is_external`). Progress
+  and cancellation must count rows scanned, not rows kept.
+- `toolkit/syncrules.py` reads an export format that was never confirmed against a real file; it matches property
+  names loosely and reports what it couldn't read. "Unknown is not no" there too: an unknown operator or a
+  computed `cloudFiltered` gives "can't tell", and the impact validator fails on anything it can't judge.
 - The property pane is narrow: a five-column table there hid its most important column behind a scrollbar
   (seen only in a screenshot). Use wrapped list entries in detail tabs.
 - Qt makes a dialog's first accept button the default on show: the change preview forced Cancel back as the

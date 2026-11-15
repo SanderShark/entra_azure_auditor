@@ -165,3 +165,52 @@ def test_gui_starts_the_desktop_app(monkeypatch):
     monkeypatch.setattr(gui_app, "run", lambda *a, **k: started.append(True) or 0)
     code, _out, _ = invoke("gui")
     assert code == 0 and started == [True]
+
+
+# ---- sync rules (offline) -----------------------------------------------------------------------
+
+def _sync_files(tmp_path):
+    import json
+    base = {"Name": "In from AD - Do not sync", "Identifier": "r1", "Direction": "Inbound", "Precedence": 50,
+            "SourceObjectType": "user", "TargetObjectType": "person",
+            "ScopeFilter": [{"ScopeConditionList": [{"Attribute": "extensionAttribute14", "ComparisonOperator": "EQUAL",
+                                                     "ComparisonValue": "no0365sync"}]}],
+            "AttributeFlowMappings": [{"Destination": "cloudFiltered", "Source": ["True"], "FlowType": "Constant"}]}
+    wider = json.loads(json.dumps(base))
+    wider["ScopeFilter"][0]["ScopeConditionList"][0]["ComparisonOperator"] = "STARTSWITH"
+    wider["ScopeFilter"][0]["ScopeConditionList"][0]["ComparisonValue"] = "no"
+    old, new, people = tmp_path / "old.json", tmp_path / "new.json", tmp_path / "users.csv"
+    old.write_text(json.dumps([base]))
+    new.write_text(json.dumps([wider]))
+    people.write_text("userPrincipalName,extensionAttribute14\na@x.com,\nsvc@x.com,no0365sync\nold@x.com,nosync-legacy\n")
+    return str(old), str(new), str(people)
+
+
+def test_sync_rules_are_described_linted_and_explained_without_signing_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(maincli, "build_settings", lambda *a, **k: pytest.fail("sync commands must not sign in"), raising=False)
+    old, _new, people = _sync_files(tmp_path)
+    code, out, _ = invoke("sync", "describe", old)
+    assert code == 0 and "extensionAttribute14 equals 'no0365sync'" in out and "FILTERS FROM THE CLOUD" in out
+    code, out, _ = invoke("sync", "lint", old)
+    assert code == 0 and "0 error(s)" in out
+    code, out, _ = invoke("sync", "explain", old, "--set", "extensionAttribute14=no0365sync")
+    assert code == 0 and "Not synchronised" in out
+    code, out, _ = invoke("sync", "explain", old, "--csv", people, "--who", "a@x.com")
+    assert code == 0 and "Synchronised as far as these rules say" in out
+    code, out, _ = invoke("sync", "explain", old, "--set", "displayName=X", "--excluded-ou", "OU=Gone,DC=x",
+                          "--set", "distinguishedName=CN=X,OU=Gone,DC=x")
+    assert code == 0 and "excluded organisational unit" in out
+    assert invoke("sync", "explain", old)[0] == 2 and invoke("sync", "describe", str(tmp_path / "missing"))[0] == 2
+
+
+def test_sync_impact_is_a_validator_with_an_exit_code(tmp_path):
+    old, new, people = _sync_files(tmp_path)
+    code, out, _ = invoke("sync", "diff", old, new)
+    assert code == 0 and "Scope changed" in out and "1 change(s) can alter who is synchronised" in out
+    code, out, _ = invoke("sync", "impact", old, new, people)
+    assert code == 1 and "1 would STOP synchronising" in out and "old@x.com" in out and "FAIL" in out
+    code, out, _ = invoke("sync", "impact", old, new, people, "--max-changes", "1")
+    assert code == 0 and "PASS" in out
+    assert invoke("sync", "impact", old, old, people)[0] == 0
+    assert invoke("sync", "impact", old, new, people, "--max-percent", "34")[0] == 0
+    assert invoke("sync", "impact", old, new, people, "--max-percent", "33")[0] == 1

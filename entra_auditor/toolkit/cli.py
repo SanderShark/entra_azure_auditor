@@ -1042,4 +1042,6 @@ def register(app: typer.Typer) -> None:
     app.add_typer(id_app, name="id")
     app.add_typer(group_app, name="group")
     app.add_typer(pim_app, name="pim")
+    from .syncrules_cli import sync_app      # offline: reads export files, never signs in
+    app.add_typer(sync_app, name="sync")
     app.command("toolkit")(toolkit_menu)
