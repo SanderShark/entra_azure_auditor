@@ -57,6 +57,10 @@ class FakeTenant:
         self.scoped_active = {}
         self.group_role_scope = {}   # group id -> directoryScopeId of the roles it holds (default '/')
         self.memberof_denied = False # True: memberOf answers 403 (the target's AUs can't be read)
+        # who holds which admin role (opt-in; see add_role_holder): (role, principal id, scope, 'active'|'eligible')
+        self.role_holders = []
+        self.assignments_denied = False     # True: listing role assignments by role answers 403
+        self.eligibility_denied = False     # True: listing eligibility schedules by role answers 403
         # device objects: id = directory object id, deviceId = hardware id (deliberately different)
         self.devices = {
             'dev-1': {'id': 'dev-1', 'deviceId': 'hw-1111', 'displayName': 'SEA-LT-001', 'operatingSystem': 'Windows',
@@ -76,6 +80,19 @@ class FakeTenant:
         if au:
             self.group_role_scope[gid] = f'/administrativeUnits/{au}'
         return self
+
+    def add_role_holder(self, role, principal_id, state='active', au=None):
+        """Give a user or group an admin role, tenant-wide or scoped to the administrative unit `au`."""
+        self.role_holders.append((role, principal_id, f'/administrativeUnits/{au}' if au else '/', state))
+        self.role_ids.setdefault(role, f"r-{role.lower().replace(' ', '-')}")
+        return self
+
+    def _assignment(self, role, pid, scope):
+        obj = self._object(pid)
+        return {'roleDefinitionId': self.role_ids[role], 'roleDefinition': {'displayName': role}, 'principalId': pid,
+                'directoryScopeId': scope,
+                'principal': {'@odata.type': obj['@odata.type'], 'id': pid, 'displayName': obj.get('displayName'),
+                              'userPrincipalName': obj.get('userPrincipalName')}}
 
     def add_scoped_eligibility(self, role, au_id):
         """Make the signed-in user eligible for `role` scoped to one administrative unit only."""
@@ -166,6 +183,16 @@ class FakeTenant:
                     yield {'id': f'srm-{pid}', 'roleId': f'dr-{role}', 'administrativeUnitId': au,
                            'roleMemberInfo': {'id': pid, 'displayName': self._object(pid).get('displayName')}}
             return
+        if 'roleDefinitionId eq' in flt and path in ('/roleManagement/directory/roleAssignments',
+                                                       '/roleManagement/directory/roleEligibilitySchedules'):
+            want = 'active' if path.endswith('roleAssignments') else 'eligible'
+            if self.assignments_denied or (want == 'eligible' and self.eligibility_denied):
+                raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
+            rid = lits(flt)[0]
+            for role, pid, scope, state in self.role_holders:
+                if self.role_ids[role] == rid and state == want:
+                    yield self._assignment(role, pid, scope)
+            return
         if 'directoryScopeId' in flt and path in ('/roleManagement/directory/roleAssignments',
                                                    '/roleManagement/directory/roleEligibilitySchedules'):
             if not self.au_scope_filter_supported:
@@ -228,6 +255,10 @@ class FakeTenant:
         if path in ('/roleManagement/directory/roleAssignments', '/roleManagement/directory/roleEligibilitySchedules'):
             if 'u-admin' in flt:
                 yield {'roleDefinitionId': 'r-ga', 'roleDefinition': {'displayName': 'Global Administrator'}}
+            want = 'active' if path.endswith('roleAssignments') else 'eligible'
+            for role, pid, scope, state in self.role_holders:
+                if pid in lits(flt) and state == want:
+                    yield self._assignment(role, pid, scope)
             return
         if path.startswith('/roleManagement/directory/roleEligibilitySchedules/filterByCurrentUser'):
             for n in self.eligible_names:

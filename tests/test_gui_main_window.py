@@ -272,8 +272,9 @@ def test_the_property_tabs_show_groups_methods_cert_ids_and_roles(qtbot, window)
     assert len(d.methods_tab.texts("Sign-in methods")) == 2
     assert d.certs_tab.texts("Certificate user IDs") == ["X509:<PN>alice@contoso.com"]
     assert d.roles_tab.texts("Active roles") == ["none"]
-    for index in range(d.tabs.count()):            # switching tabs asks Graph for nothing more
-        d.tabs.setCurrentIndex(index)
+    for index in range(d.tabs.count()):            # switching tabs asks Graph for nothing more...
+        if d.tabs.widget(index) is not d.managers_tab:     # ...except "Who can manage", which loads on demand
+            d.tabs.setCurrentIndex(index)
     assert len(win.session.graph.calls) == calls_before
 
 
@@ -317,3 +318,109 @@ def test_the_elevation_dialog_offers_a_pim_group(qtbot, window):
     justification.ok_button.click()
     result = wait_for(qtbot, ctrl, ResultDialog)
     assert result.status_label.text().startswith("OK:") and tenant.users["u-alice"]["accountEnabled"] is False
+
+
+# ---- who can manage ---------------------------------------------------------------------------
+
+def managed_tenant():
+    from tests.fakes import U
+    tenant = FakeTenant()
+    for uid, name in (("a-ga", "Gail Global"), ("a-hd", "Hank Helpdesk"), ("a-exec", "Eve Executive-Support")):
+        tenant.users[uid] = U(uid, name, f"{uid}@contoso.com")
+    tenant.add_admin_unit("au-exec", "Executives", members=("u-bob",), isMemberManagementRestricted=True)
+    tenant.add_role_holder("Global Administrator", "a-ga").add_role_holder("Helpdesk Administrator", "a-hd")
+    tenant.add_role_holder("Helpdesk Administrator", "a-exec", au="au-exec")
+    return tenant
+
+
+def open_managers(qtbot, win, user_id):
+    win.select_user(user_id)
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    tab = win.detail.managers_tab
+    assert tab.report is None and tab.rows() == [] and "Open this tab" in tab.summary.text()   # nothing asked yet
+    win.detail.tabs.setCurrentWidget(tab)
+    qtbot.waitUntil(lambda: tab.report is not None)
+    return tab
+
+
+def test_who_can_manage_loads_when_its_tab_is_opened_and_lists_the_admins(qtbot, window):
+    win = window(managed_tenant())
+    tab = open_managers(qtbot, win, "u-alice")
+    assert tab.rows() == [
+        ("Gail Global (a-ga@contoso.com)", "Global Administrator", "Whole tenant", "Active",
+         "reset password, enable/disable, delete, change sign-in name, sign-in methods, edit profile, licences"),
+        ("Hank Helpdesk (a-hd@contoso.com)", "Helpdesk Administrator", "Whole tenant", "Active", "reset password"),
+    ]
+    calls = len(win.session.graph.calls)
+    win.detail.tabs.setCurrentIndex(0)
+    win.detail.tabs.setCurrentWidget(tab)                       # coming back doesn't ask again
+    assert len(win.session.graph.calls) == calls and win.session.graph.writes == []
+
+
+def test_who_can_manage_explains_a_restricted_unit(qtbot, window):
+    win = window(managed_tenant())
+    tab = open_managers(qtbot, win, "u-bob")
+    assert "restricted management unit Executives" in tab.summary.text()
+    by_who = {row[0].split(" (")[0]: row for row in tab.rows()}
+    assert by_who["Eve Executive-Support"][2:] == ("Unit: Executives", "Active", "reset password")
+    assert by_who["Gail Global"][4].startswith("licences (everything else is blocked by a restricted")
+    assert by_who["Hank Helpdesk"][4].startswith("nothing for this user (blocked")
+
+
+def test_who_can_manage_follows_the_selection_and_stays_on_the_tab(qtbot, window):
+    win = window(managed_tenant())
+    tab = open_managers(qtbot, win, "u-alice")
+    win.select_user("u-bob")                                    # the tab is still the open one: it reloads
+    qtbot.waitUntil(lambda: tab.report is not None and tab.report.user_id == "u-bob")
+    assert any(row[2] == "Unit: Executives" for row in tab.rows())
+
+
+def test_a_late_answer_for_a_user_no_longer_selected_is_dropped(qtbot, window):
+    import threading
+
+    from entra_auditor.toolkit.managers import ManagerReport, who_can_manage
+    release = threading.Event()
+
+    def slow_for_alice(graph, user_id):
+        if user_id == "u-alice":
+            release.wait(5)
+            return ManagerReport(user_id=user_id, notes=["STALE"])
+        return who_can_manage(graph, user_id)
+
+    win = window(managed_tenant())
+    tab = win.detail.managers_tab
+    tab._loader = slow_for_alice
+    win.select_user("u-alice")
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    win.detail.tabs.setCurrentWidget(tab)
+    qtbot.waitUntil(lambda: tab.loading)
+    win.select_user("u-bob")
+    qtbot.waitUntil(lambda: tab.report is not None and tab.report.user_id == "u-bob")
+    release.set()
+    qtbot.waitUntil(lambda: not win.runner.busy)
+    assert tab.report.user_id == "u-bob" and "STALE" not in tab.summary.text()
+
+
+def test_who_can_manage_says_when_the_admins_cannot_be_read_and_a_failure_can_be_retried(qtbot, window):
+    tenant = managed_tenant()
+    tenant.assignments_denied = True
+    win = window(tenant)
+    tab = open_managers(qtbot, win, "u-alice")
+    assert tab.rows() == [] and "(could not be read)" in tab.summary.text()
+
+    calls = []
+
+    def flaky(graph, user_id):
+        calls.append(user_id)
+        if len(calls) == 1:
+            raise GraphError("boom", status_code=500)
+        from entra_auditor.toolkit.managers import ManagerReport
+        return ManagerReport(user_id=user_id, managers=[])
+
+    tab._loader = flaky
+    win.select_user("u-bob")
+    qtbot.waitUntil(lambda: "Could not work out" in tab.summary.text())
+    win.detail.tabs.setCurrentIndex(0)
+    win.detail.tabs.setCurrentWidget(tab)                       # looking again retries
+    qtbot.waitUntil(lambda: tab.report is not None)
+    assert "No admin with a user-management role was found." in tab.summary.text()

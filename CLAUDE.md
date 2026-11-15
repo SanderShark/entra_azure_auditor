@@ -42,12 +42,13 @@ entra_auditor/
                        flow (the change flow as a UI-independent state machine),
                        ui (Rich rendering + `run_action`, the terminal driver for flow),
                        directory (load all users/groups once for local filtering),
-                       group_pim (PIM for Groups), admin_units (AU reads; AU plans live in actions)
+                       group_pim (PIM for Groups), admin_units (AU reads; AU plans live in actions),
+                       managers (read-only "who can manage this user": Microsoft's role tables as data)
   gui/                 PySide6 desktop app (`auditor gui`, optional extra `.[gui]`): tasks (thread pool ->
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~780 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~810 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -103,6 +104,8 @@ tests/                 ~780 tests, no network; fakes.py, builders.py, conftest.p
   same name. A role is `(id, scope)`: use `pim.scope_applies` / `PimService.match(..., target_scopes)`; the flow
   looks up the target's units (`admin_units.admin_units_of`) only when a scoped role is in play. A unit-scoped
   role manages the unit's members, never the unit itself.
+- The property pane is narrow: a five-column table there hid its most important column behind a scrollbar
+  (seen only in a screenshot). Use wrapped list entries in detail tabs.
 - Qt makes a dialog's first accept button the default on show: the change preview forced Cancel back as the
   default (Enter must never apply a change). Keep that test.
 
@@ -117,7 +120,10 @@ browser through `gui/session.py`) and its directory load at scale, **PIM for Gro
 the Roles / PIM page and group candidates in the elevation flow), **administrative units** (`toolkit/admin_units.py`,
 the AU plans in `actions.py`, the AU page; in particular whether `$filter=directoryScopeId eq '/administrativeUnits/..'`
 works on roleAssignments/roleEligibilitySchedules, which has a scopedRoleMembers fallback), **unit-scoped PIM
-roles in the elevation flow** (that `memberOf` lists the target's administrative units with `@odata.type`, and
+roles in the elevation flow** and the **"Who can manage" tab** (`toolkit/managers.py`: that role assignments
+can be listed with `$filter=roleDefinitionId eq ..&$expand=principal`, also on roleEligibilitySchedules, that
+`memberOf`/`ownedObjects` return `isAssignableToRole` and unit type; its rules come from Microsoft's docs
+tables and must be re-checked when those change) (that `memberOf` lists the target's administrative units with `@odata.type`, and
 that `selfActivate` with `directoryScopeId=/administrativeUnits/<id>` works), and the assumption
 that permissions consented on the app registration but not requested at sign-in (PIM for Groups, AU writes)
 still appear in the token, group add/remove after the
@@ -141,7 +147,7 @@ pydantic 2.14, Typer 0.29, Rich 14.3, questionary 2.1, httpx 0.28, MSAL 1.39). P
    property tabs; Roles / PIM page (directory roles + PIM for Groups, activate/deactivate); Administrative
    units page (flat AU list | members | properties + scoped roles; add/remove users and groups, edit settings);
    group memberships offered as elevation candidates. Next: role assignment management (owner to decide on
-   writes), Groups page, Audit, Action log, tenant switcher. Remaining design notes:
+   writes), Groups page, Audit, Action log, tenant switcher. Users also have a lazy "Who can manage" tab. Remaining design notes:
    - ADUC-style: navigation (Users, Groups, Roles/PIM, Audit, Action log) | list | property tabs
      (General, Groups, Sign-in methods, Certificate IDs, Roles, Activity).
    - Speed: load the directory once in the background (`$select`, `$top=999`, all pages), filter locally as

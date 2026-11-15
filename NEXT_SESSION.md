@@ -17,10 +17,10 @@ Delete or rewrite this file once its first steps are done.
 3. **Set up and run the checks** (the environment's `python` is missing; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest     # 777 passed after the scope fix
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest     # 808 passed
    .venv/bin/ruff check .                                   # clean
    ```
-4. The scope bug (section 4) is **fixed**. Next: pick from the ideas (section 5) with the owner, and ask about
+4. The scope bug (section 4) is **fixed**, and idea 1 ("Who can manage this user?") is **built**. Next: pick from the ideas (section 5) with the owner, and ask about
    role-assignment writes (section 3) when that comes up.
 
 ## 2. What exists now
@@ -83,8 +83,11 @@ only, which is what Entra checks.
 
 ## 5. Ideas the owner liked the sound of (pick with the owner)
 
-1. "Who can manage this user?" tab: tenant-wide admins + AU-scoped admins via the user's AUs + restricted-AU
-   shielding (Entra's version of ADUC delegation).
+1. ~~"Who can manage this user?" tab~~ DONE (`toolkit/managers.py`, `ManagersTab` in `gui/user_detail.py`, loads
+   when opened). Possible follow-ups: expand a group principal to its members; custom roles (read
+   `rolePermissions`); admins reachable through PIM groups; the same tab for groups ("who can manage this
+   group", incl. owners); a CLI command (`auditor id managers`); use the restricted-unit knowledge in the
+   elevation flow (don't offer a tenant-wide role for a target in a restricted unit).
 2. Leaver workflow: one preview for disable, revoke sessions, reset password, remove from groups/AUs/licences;
    clear partial-success report (roadmap item 4).
 3. Undo from the action log: build the reverse plan from logged before/after values, through the same preview.
@@ -119,6 +122,9 @@ Docs pages used last session (re-check with the docs skill):
 - List unifiedRoleAssignments (`$expand=principal` documented; `directoryScopeId` filter not explicitly listed)
 - List a user's direct memberships / List group memberships (return administrative units; cast needs advanced query)
 - Assign Microsoft Entra roles, "administrative unit scope" (scoped roles manage members, not the unit; role list)
+- Privileged roles and permissions ("Who can reset passwords", "Who can perform sensitive actions" tables)
+- Restricted management administrative units (who is blocked, what stays allowed)
+- List unifiedRoleAssignments (example 1: `$filter=roleDefinitionId eq ..&$expand=principal`), List roleEligibilitySchedules
 - List devices (`Device.Read.All` or `Directory.Read.All`; AU links use the object `id`, not `deviceId`)
 
 ## 7. Working notes

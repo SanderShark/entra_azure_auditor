@@ -193,7 +193,9 @@ python -m pip install ".[gui]"     # PySide6 is optional: the CLI doesn't need i
 python -m entra_auditor gui
 ```
 
-It signs in as you (device code or browser), never with an app secret. Tenants come from
+It signs in as you (device code or browser), never with an app secret, so the app registration needs
+**delegated** permissions only (the toolkit table above); application permissions are used solely by the
+unattended audit (`AUDITOR_AUTH_MODE=app`). Tenants come from
 `~/.entra_auditor/tenants.json`, or from `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` in `.env` when that file is missing:
 
 ```json
@@ -210,6 +212,11 @@ registration needs **Allow public client flows** for device code, and the `http:
 So far:
 - **Users:** whole directory loaded once and filtered as you type; General, Groups, Sign-in methods,
   Certificate IDs and Roles tabs; enable/disable.
+- **Who can manage** (a tab on each user, read-only): the admins whose role reaches this user and what each
+  can do (reset password, enable/disable, sign-in methods, edit profile, licences), tenant-wide or through an
+  administrative unit, active or PIM-eligible. It applies Microsoft's rules: a restricted management unit
+  shields the user from tenant-wide admins, and a user's own admin roles limit who may reset their password.
+  Built-in roles only; you need a role that can read role assignments (for example Global Reader).
 - **Administrative units:** units on the left, members in the middle, settings and scoped roles on the right
   (like OUs in ADUC, but AUs don't nest); add/remove users, groups and devices, edit name, description and
   dynamic membership.

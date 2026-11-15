@@ -1,10 +1,13 @@
-"""Property tabs for the selected user: General, Groups, Sign-in methods, Certificate IDs, Roles.
+"""Property tabs for the selected user: General, Groups, Sign-in methods, Certificate IDs, Roles,
+Who can manage.
 
 One profile load feeds every tab (no extra requests per tab). A part of the profile that couldn't be read
 is shown as "could not be read", never as an empty list (unknown is not empty).
 
 The profile loads on a worker after the selection settles (a short delay, so arrowing through the list
 doesn't fire a burst of Graph requests). A response for a user who is no longer selected is dropped.
+
+"Who can manage" needs some twenty extra requests, so it loads lazily: only when its tab is looked at.
 """
 
 from __future__ import annotations
@@ -12,10 +15,12 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QScrollArea,
     QStackedWidget,
     QTabWidget,
@@ -23,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..toolkit.managers import ManagerReport, who_can_manage
 from ..toolkit.models import UserProfile, UserSummary
 from ..toolkit.profile import load_user_profile
 from .tasks import TaskRunner
@@ -123,6 +129,100 @@ class ListTab(QWidget):
         return [widget.item(i).text() for i in range(widget.count())]
 
 
+class ManagersTab(QWidget):
+    """Who can manage this user: the admins whose role reaches them, and what each can do.
+
+    Loads on demand (`ensure_loaded`, called when the tab is shown). A response for a user who is no longer
+    selected is dropped. One wrapped entry per admin (the pane is narrow: a table hid the "Can" column);
+    admins who can do nothing for this user are greyed and say why.
+    """
+
+    COLUMNS = ("Who", "Role", "Scope", "Assignment", "Can")
+    PROMPT = "Open this tab to see who can manage the user."
+
+    def __init__(self, runner: TaskRunner, graph_source: Callable[[], Any], parent: Optional[QWidget] = None, *,
+                 loader: Callable[[Any, str], ManagerReport] = who_can_manage) -> None:
+        super().__init__(parent)
+        self.runner = runner
+        self._graph_source = graph_source
+        self._loader = loader
+        self.user_id: Optional[str] = None
+        self.report: Optional[ManagerReport] = None
+        self._generation = 0
+        self._requested = False
+
+        layout = QVBoxLayout(self)
+        self.summary = _value_label()
+        layout.addWidget(self.summary)
+        self.list = QListWidget()
+        self.list.setWordWrap(True)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # entries wrap instead
+        self.list.setAlternatingRowColors(True)
+        self.list.setSpacing(2)
+        self.list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        layout.addWidget(self.list, 1)
+        self.footnote = _value_label()
+        self.footnote.setStyleSheet("color: #666;")
+        self.footnote.setText("From Microsoft's published rules for built-in roles. Not shown: custom roles, group "
+                              "owners, and admins who would get a role by activating a PIM group membership.")
+        layout.addWidget(self.footnote)
+        self.set_user(None)
+
+    @property
+    def loading(self) -> bool:
+        return self._requested and self.report is None and self.user_id is not None
+
+    def set_user(self, user_id: Optional[str]) -> None:
+        """Forget what is shown; nothing is requested until the tab is looked at."""
+        self._generation += 1
+        self.user_id, self.report, self._requested = user_id, None, False
+        self.list.clear()
+        self.summary.setText(self.PROMPT if user_id else "")
+
+    def ensure_loaded(self) -> None:
+        if self.user_id is None or self._requested:
+            return
+        self._requested = True
+        generation, user_id, graph = self._generation, self.user_id, self._graph_source()
+        self.summary.setText("Working out who can manage this user...")
+        self.runner.submit(lambda: self._loader(graph, user_id),
+                           lambda report: self._loaded(generation, report),
+                           lambda exc: self._failed(generation, exc))
+
+    def _loaded(self, generation: int, report: ManagerReport) -> None:
+        if generation != self._generation:
+            return
+        self.report = report
+        lines = list(report.notes) + [f"! {w}" for w in report.warnings]
+        if report.managers is None:
+            lines.append("The admins " + UNREADABLE + ".")
+        elif not report.managers:
+            lines.append("No admin with a user-management role was found.")
+        self.summary.setText("\n".join(lines))
+        self.list.clear()
+        grey = QBrush(QColor("#888"))
+        for manager in report.managers or []:
+            can = ", ".join(manager.can) if manager.can else "nothing for this user"
+            if manager.why_not:
+                can += f" ({manager.why_not})"
+            row = (manager.who, manager.role, manager.scope_label, manager.assignment_label, can)
+            item = QListWidgetItem(f"{row[0]}\n{row[1]}  |  {row[2]}  |  {row[3]}\nCan: {can}")
+            item.setData(Qt.ItemDataRole.UserRole, row)
+            if not manager.can:
+                item.setForeground(grey)
+            self.list.addItem(item)
+
+    def _failed(self, generation: int, exc: BaseException) -> None:
+        if generation != self._generation:
+            return
+        self._requested = False             # looking at the tab again retries
+        self.summary.setText(f"Could not work out who can manage this user: {exc}")
+
+    def rows(self) -> list[tuple[str, ...]]:
+        """What is listed, as (who, role, scope, assignment, can) per admin."""
+        return [tuple(self.list.item(i).data(Qt.ItemDataRole.UserRole)) for i in range(self.list.count())]
+
+
 class UserDetail(QWidget):
     """Placeholder text, or the tabs for one user."""
 
@@ -152,6 +252,9 @@ class UserDetail(QWidget):
         self.tabs.addTab(self.methods_tab, "Sign-in methods")
         self.tabs.addTab(self.certs_tab, "Certificate IDs")
         self.tabs.addTab(self.roles_tab, "Roles")
+        self.managers_tab = ManagersTab(runner, graph_source)
+        self.tabs.addTab(self.managers_tab, "Who can manage")
+        self.tabs.currentChanged.connect(self._tab_changed)
         self.stack.addWidget(self.message)
         self.stack.addWidget(self.tabs)
         layout = QVBoxLayout(self)
@@ -170,6 +273,7 @@ class UserDetail(QWidget):
     def show_user(self, user: Optional[UserSummary]) -> None:
         self._generation += 1
         self.user, self.profile = user, None
+        self.managers_tab.set_user(None)
         if user is None:
             self._timer.stop()
             self._pending = False
@@ -211,7 +315,13 @@ class UserDetail(QWidget):
         self.certs_tab.show_items("Certificate user IDs", None if cert_unreadable else profile.cert_user_ids, "none")
         self.roles_tab.show_items("Active roles", profile.roles_active, "none")
         self.roles_tab.show_items("Eligible roles (PIM)", profile.roles_eligible, "none")
+        self.managers_tab.set_user(profile.id)
         self.stack.setCurrentWidget(self.tabs)
+        self._tab_changed()
+
+    def _tab_changed(self, _index: int = 0) -> None:
+        if self.tabs.currentWidget() is self.managers_tab and self.stack.currentWidget() is self.tabs:
+            self.managers_tab.ensure_loaded()
 
     def _failed(self, generation: int, exc: BaseException) -> None:
         if generation != self._generation:
