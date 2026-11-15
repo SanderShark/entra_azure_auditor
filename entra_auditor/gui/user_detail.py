@@ -272,7 +272,7 @@ class ManagersTab(QWidget):
         self.summary.setText("Working out who can manage this user...")
         self.runner.submit(lambda: self._loader(graph, user_id),
                            lambda report: self._loaded(generation, report),
-                           lambda exc: self._failed(generation, exc))
+                           lambda exc: self._failed(generation, exc), owner=self)
 
     def _loaded(self, generation: int, report: ManagerReport) -> None:
         if generation != self._generation:
@@ -422,7 +422,7 @@ class LicencesTab(QWidget):
         self.summary.setText("Loading licences...")
         self.runner.submit(lambda: self._loader(graph, user_id),
                            lambda report: self._loaded(generation, report),
-                           lambda exc: self._failed(generation, exc))
+                           lambda exc: self._failed(generation, exc), owner=self)
 
     def _loaded(self, generation: int, report: LicenceReport) -> None:
         if generation != self._generation:
@@ -560,7 +560,7 @@ class UserDetail(QWidget):
         self._pending = True
         self.runner.submit(lambda: self._loader(graph, user_id),
                            lambda profile: self._loaded(generation, profile),
-                           lambda exc: self._failed(generation, exc))
+                           lambda exc: self._failed(generation, exc), owner=self)
 
     def _loaded(self, generation: int, profile: UserProfile) -> None:
         if generation != self._generation:

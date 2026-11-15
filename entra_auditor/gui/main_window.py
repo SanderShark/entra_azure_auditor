@@ -293,7 +293,7 @@ class MainWindow(QMainWindow):
                                  exclude_external=hide_external,
                                  should_cancel=lambda: self._closing or generation != self._load_generation),
             lambda users: self._loaded(generation, users),
-            lambda exc: self._load_failed(generation, exc))
+            lambda exc: self._load_failed(generation, exc), owner=self)
 
     @property
     def user_scope(self) -> str:
@@ -418,7 +418,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Offboarding could not start.", 10_000)
             QMessageBox.warning(self, "Could not start offboarding", f"Reading the user failed:\n\n{exc}")
 
-        self.runner.submit(lambda: gather_leaver_facts(graph, user.id), self._leaver_facts_ready, failed)
+        self.runner.submit(lambda: gather_leaver_facts(graph, user.id), self._leaver_facts_ready, failed, owner=self)
 
     def _leaver_facts_ready(self, facts: LeaverFacts) -> None:
         self._gathering = False
@@ -461,7 +461,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("The template could not be read.", 10_000)
             QMessageBox.warning(self, "Could not read the template", f"Reading {model.label} failed:\n\n{exc}")
 
-        self.runner.submit(lambda: gather_template(graph, model.id), self._open_new_user, failed)
+        self.runner.submit(lambda: gather_template(graph, model.id), self._open_new_user, failed, owner=self)
 
     def _open_new_user(self, template: Optional[Template]) -> None:
         self._gathering = False
@@ -523,7 +523,7 @@ class MainWindow(QMainWindow):
     def _refresh_user(self, user_id: str) -> None:
         graph = self.session.graph
         self.runner.submit(lambda: get_user(graph, user_id), self._user_refreshed,
-                           lambda exc: self.statusBar().showMessage(f"Could not re-read the user: {exc}", 10_000))
+                           lambda exc: self.statusBar().showMessage(f"Could not re-read the user: {exc}", 10_000), owner=self)
 
     def _user_refreshed(self, user: UserSummary) -> None:
         self.model.update_user(user)

@@ -198,7 +198,7 @@ class GroupsPage(QWidget):
         self.loading = True
         self.groups_status.setText("Loading groups...")
         graph = self.window.session.graph
-        self.window.runner.submit(lambda: self._loader(graph), self._groups_loaded, self._groups_failed)
+        self.window.runner.submit(lambda: self._loader(graph), self._groups_loaded, self._groups_failed, owner=self)
 
     def _groups_loaded(self, groups: list[GroupSummary]) -> None:
         self.loading, self.loaded = False, True
@@ -302,7 +302,7 @@ class GroupsPage(QWidget):
         generation, graph = self._generation, self.window.session.graph
         self.window.runner.submit(lambda: load_group_contents(graph, group.id),
                                   lambda contents: self._contents_loaded(generation, contents),
-                                  lambda exc: self._contents_failed(generation, exc))
+                                  lambda exc: self._contents_failed(generation, exc), owner=self)
         self._update_buttons()
 
     def _contents_loaded(self, generation: int, contents: GroupContents) -> None:

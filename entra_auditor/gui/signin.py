@@ -164,7 +164,7 @@ class SignInDialog(QDialog):
                             f"{int(BROWSER_TIMEOUT // 60)} minutes.")
         self.runner.submit(lambda: self.service.open_session(tenant, provider),
                            lambda session: self._signed_in(attempt, session),
-                           lambda exc: self._failed(attempt, exc))
+                           lambda exc: self._failed(attempt, exc), owner=self)
 
     @Slot(object)
     def _show_device_code(self, code: DeviceCode) -> None:

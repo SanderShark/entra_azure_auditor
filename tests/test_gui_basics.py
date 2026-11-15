@@ -183,3 +183,25 @@ def test_a_changed_user_is_shown_and_refiltered(models):
     alice = next(u for u in model.users if u.id == "u-alice")
     model.update_user(alice.model_copy(update={"account_enabled": False}))
     assert [proxy.index(r, 0).data() for r in range(proxy.rowCount())] == ["Alice Ng"]
+
+
+def test_a_result_whose_owner_was_destroyed_is_dropped(qtbot, runner):
+    """A slow load that finishes after its window closed must not write into deleted widgets."""
+    import threading
+
+    from PySide6.QtWidgets import QLabel
+    from shiboken6 import delete
+
+    release, delivered, errors = threading.Event(), [], []
+    label = QLabel()
+    runner.submit(lambda: release.wait(5) and "late", lambda v: (delivered.append(v), label.setText(v)),
+                  errors.append, owner=label)
+    delete(label)                                    # the window went away while the work was running
+    release.set()
+    qtbot.waitUntil(lambda: not runner.busy)
+    assert delivered == [] and errors == []
+
+    alive = QLabel()
+    qtbot.addWidget(alive)
+    runner.submit(lambda: "on time", alive.setText, owner=alive)
+    qtbot.waitUntil(lambda: alive.text() == "on time")    # a live owner still gets its result

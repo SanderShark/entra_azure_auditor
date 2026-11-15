@@ -194,7 +194,7 @@ class RolesPage(QWidget):
         self.loading = True
         self.reload_button.setEnabled(False)
         graph = self.window.session.graph
-        self.window.runner.submit(lambda: load_pim_state(graph), self._loaded, self._load_failed)
+        self.window.runner.submit(lambda: load_pim_state(graph), self._loaded, self._load_failed, owner=self)
 
     def _loaded(self, state: dict[str, Any]) -> None:
         self.loading, self.loaded = False, True
@@ -286,7 +286,7 @@ class RolesPage(QWidget):
         session, service, reporter = self.window.session, self._service(row), RecordingReporter()
         self.window.runner.submit(
             lambda: (activate_and_wait(session, service, row.target, reason, minutes, reporter), reporter),
-            self._activated, self._action_failed)
+            self._activated, self._action_failed, owner=self)
 
     def _activated(self, outcome: tuple[bool, RecordingReporter]) -> None:
         ok, reporter = outcome
@@ -310,7 +310,7 @@ class RolesPage(QWidget):
             service.deactivate(target)
             session.refresh()          # drop the role from the token
 
-        self.window.runner.submit(work, lambda _r: self._deactivated(target), self._action_failed)
+        self.window.runner.submit(work, lambda _r: self._deactivated(target), self._action_failed, owner=self)
 
     def _deactivated(self, target: Any) -> None:
         self._set_busy(False, f"{target.name} was deactivated.")

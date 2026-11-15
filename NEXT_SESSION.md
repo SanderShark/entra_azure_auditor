@@ -16,7 +16,7 @@ turns into a pile of patches.
 3. **Set up and run the checks** (the environment has no `python`; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 1008 passed (the default addopts hide the summary)
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 1012 passed (the default addopts hide the summary)
    .venv/bin/ruff check .                                               # clean
    ```
 4. Then: section 4 (what to build next) and section 3 (questions for the owner).
@@ -194,6 +194,10 @@ first (the owner's test tenant has no eligible roles, so PIM will be tested in p
   that had segfaulted, because only the last output line was looked at. The cause (two thread/lifetime bugs in
   `gui/tasks.py` and `gui/change.py`, see CLAUDE.md) was fixed in the next commit; the suite then passed 8 runs in
   a row. If a run ever ends in a "Fatal Python error" dump again, treat it as a real bug, not as flakiness.
+- Config files (2026-11-15, the owner thought they were dead): `requirements.txt` IS used (pyproject reads it; CI
+  installs through `requirements-dev.txt`), `.env.example` documents every environment variable the code reads,
+  and `tenants.example.json` is the desktop app's template. Three tests keep them in step with the code. When a
+  setting or dependency is added, update the example file in the same commit or those tests fail.
 - When a tool call that writes this file is rejected, re-check before committing: one commit (`7738fb0`) claimed
   to rewrite it when the write had failed.
 - Commits end with the attribution line from the session's instructions; keep model names out of commits.

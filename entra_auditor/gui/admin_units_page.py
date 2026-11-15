@@ -260,7 +260,7 @@ class AdminUnitsPage(QWidget):
         self.loading = True
         self.units_status.setText("Loading administrative units...")
         graph = self.window.session.graph
-        self.window.runner.submit(lambda: list_admin_units(graph), self._units_loaded, self._units_failed)
+        self.window.runner.submit(lambda: list_admin_units(graph), self._units_loaded, self._units_failed, owner=self)
 
     def _units_loaded(self, result: tuple[list[AdminUnit], list[str]]) -> None:
         units, warnings = result
@@ -373,7 +373,7 @@ class AdminUnitsPage(QWidget):
         generation, graph = self._generation, self.window.session.graph
         self.window.runner.submit(lambda: load_unit_contents(graph, unit.id),
                                   lambda result: self._contents_loaded(generation, result),
-                                  lambda exc: self._contents_failed(generation, exc))
+                                  lambda exc: self._contents_failed(generation, exc), owner=self)
         self._update_buttons()
 
     def _contents_loaded(self, generation: int, result: tuple) -> None:
@@ -531,7 +531,7 @@ class AdminUnitsPage(QWidget):
 
             self.window.runner.submit(lambda: load_groups(graph), loaded,
                                       lambda exc: (self.member_status.setText(f"Couldn't load groups: {exc}"),
-                                                   self._update_buttons()))
+                                                   self._update_buttons()), owner=self)
             return
         present = {m.id for m in self.members}
         unit, base = self.unit, self.window.session.graph.base_url
@@ -556,7 +556,7 @@ class AdminUnitsPage(QWidget):
 
             self.window.runner.submit(lambda: load_devices(graph), loaded,
                                       lambda exc: (self.member_status.setText(f"Couldn't load devices: {exc}"),
-                                                   self._update_buttons()))
+                                                   self._update_buttons()), owner=self)
             return
         present = {m.id for m in self.members}
         unit, base = self.unit, self.window.session.graph.base_url

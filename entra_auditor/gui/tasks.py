@@ -3,6 +3,10 @@
 The UI thread must never wait on the network. ``TaskRunner.submit(fn, on_done, on_error)`` runs ``fn``
 on a worker and calls ``on_done(result)`` or ``on_error(exception)`` back on the UI thread.
 
+Pass ``owner`` (the widget the callbacks update): if it has been destroyed by the time the work finishes
+(its window was closed), the result is dropped instead of being written into deleted widgets. Without
+that, a slow load finishing after its window closed raised "Internal C++ object already deleted".
+
 Why the relay: a Qt signal connected to a plain Python callable runs that callable in the thread that
 emitted it, which would touch widgets from a worker. Workers emit on a relay object instead, and the
 runner (a QObject living on the UI thread) receives through a queued connection and dispatches.
@@ -15,6 +19,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from shiboken6 import isValid
 
 log = logging.getLogger(__name__)
 
@@ -53,14 +58,15 @@ class TaskRunner(QObject):
         self._pool.setMaxThreadCount(max_threads)
         self._relay = _Relay()
         self._relay.finished.connect(self._deliver)   # receiver is self: queued onto the UI thread
-        self._callbacks: dict[int, tuple[Optional[Callable], Callable]] = {}
+        self._callbacks: dict[int, tuple[Optional[Callable], Callable, Optional[QObject]]] = {}
         self._jobs: dict[int, _Job] = {}        # keeps each job alive until _deliver has run for it
         self._ids = itertools.count(1)
 
     def submit(self, fn: Callable[[], Any], on_done: Optional[Callable[[Any], None]] = None,
-               on_error: Optional[Callable[[BaseException], None]] = None) -> int:
+               on_error: Optional[Callable[[BaseException], None]] = None, *,
+               owner: Optional[QObject] = None) -> int:
         job_id = next(self._ids)
-        self._callbacks[job_id] = (on_done, on_error or _log_error)
+        self._callbacks[job_id] = (on_done, on_error or _log_error, owner)
         job = _Job(job_id, fn, self._relay)
         self._jobs[job_id] = job
         self._pool.start(job)
@@ -76,8 +82,11 @@ class TaskRunner(QObject):
 
     @Slot(int, bool, object)
     def _deliver(self, job_id: int, ok: bool, value: Any) -> None:
-        on_done, on_error = self._callbacks.pop(job_id, (None, _log_error))
+        on_done, on_error, owner = self._callbacks.pop(job_id, (None, _log_error, None))
         self._jobs.pop(job_id, None)            # run() has returned: the job can go
+        if owner is not None and not isValid(owner):
+            log.debug("dropping the result of job %s: its owner was destroyed", job_id)
+            return
         if ok:
             if on_done is not None:
                 on_done(value)

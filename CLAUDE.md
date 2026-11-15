@@ -20,8 +20,11 @@ ruff check .
 python -m entra_auditor --help   # note the -m; `python entra_auditor` is a path and fails
 ```
 
-Configuration comes from `.env` (see `.env.example`). Never commit `.env`, certificates, token caches or
-reports (`.gitignore` covers them).
+Configuration comes from `.env` (see `.env.example`) for the command line, and `tenants.json` (see
+`tenants.example.json`) for the desktop app. Never commit `.env`, `tenants.json`, certificates, token caches
+or reports (`.gitignore` covers them). `requirements.txt` is the single source of runtime dependencies
+(`pyproject.toml` reads it); tests in `tests/test_entry_points.py` fail when `.env.example`, the example
+tenants file or `requirements.txt` drift from the code.
 
 ## Layout
 
@@ -56,7 +59,7 @@ entra_auditor/
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, leaver (offboarding dialog), onboarding (new-user dialog), groups_page, devices_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~1010 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~1010 tests (the count grows; see NEXT_SESSION.md), no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -143,7 +146,9 @@ tests/                 ~1010 tests, no network; fakes.py, builders.py, conftest.
   (1) a QRunnable with auto-delete on is deleted by the pool while Python may be collecting the same object:
   `tasks._Job` turns auto-delete off and `TaskRunner` holds the job until its result is delivered;
   (2) `lambda: self.flow.justify(dialog.reason)` read a widget INSIDE the worker, after the dialog (deleted on
-  close) was gone. Read widget values on the UI thread into plain variables first, then start the worker.
+  close) was gone. Read widget values on the UI thread into plain variables first, then start the worker;
+  (3) a load that finished after its window closed wrote into deleted widgets: every `runner.submit(...)`
+  passes `owner=self`, and the runner drops a result whose owner is gone. Keep passing it in new code.
   An intermittent crash shows up as a run that ends in a traceback dump instead of "N passed": check the exit
   code, and run the suite several times after touching threads or dialogs.
 - A wrapping QLabel can't break a value with no spaces (a distinguished name): it was clipped at the pane's

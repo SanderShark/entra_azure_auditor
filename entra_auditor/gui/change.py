@@ -301,7 +301,7 @@ class ChangeController(QObject):
 
     def _run(self, fn: Callable[[], Step], text: str) -> None:
         self._show_busy(text)
-        self.runner.submit(fn, self._on_step, self._on_error)
+        self.runner.submit(fn, self._on_step, self._on_error, owner=self)
 
     def _show_busy(self, text: str) -> None:
         if self.busy_dialog is None:

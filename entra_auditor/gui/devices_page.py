@@ -185,7 +185,7 @@ class DevicesPage(QWidget):
         self.loading = True
         self.status.setText("Loading devices...")
         graph = self.window.session.graph
-        self.window.runner.submit(lambda: self._loader(graph), self._loaded, self._failed)
+        self.window.runner.submit(lambda: self._loader(graph), self._loaded, self._failed, owner=self)
 
     def _loaded(self, devices: list[DeviceSummary]) -> None:
         self.loading, self.loaded = False, True
@@ -286,7 +286,7 @@ class DevicesPage(QWidget):
             self.recovery_status.setText(f"{exc}" + (f"\n{hint}" if hint else ""))
             self._update_buttons()
 
-        self.window.runner.submit(work, finished, failed)
+        self.window.runner.submit(work, finished, failed, owner=self)
 
     def find_keys(self) -> None:
         if self.device is None or self.busy:
