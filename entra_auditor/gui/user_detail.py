@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QFormLayout,
@@ -114,7 +114,9 @@ class ListTab(QWidget):
             self.lists[title] = widget
             layout.addWidget(widget)
 
-    def show_items(self, title: str, items: Optional[list[str]], empty: str) -> None:
+    def show_items(self, title: str, items: Optional[list[str]], empty: str,
+                   data: Optional[list[Any]] = None) -> None:
+        """``data`` (same length as ``items``) is attached to the rows, for double-click handlers."""
         widget = self.lists[title]
         widget.clear()
         if items is None:
@@ -123,6 +125,8 @@ class ListTab(QWidget):
             widget.addItem(empty)
         else:
             widget.addItems(items)
+            for row, value in enumerate(data or []):
+                widget.item(row).setData(Qt.ItemDataRole.UserRole, value)
 
     def texts(self, title: str) -> list[str]:
         widget = self.lists[title]
@@ -226,6 +230,8 @@ class ManagersTab(QWidget):
 class UserDetail(QWidget):
     """Placeholder text, or the tabs for one user."""
 
+    group_opened = Signal(str)          # a group on the Groups tab was double-clicked (its id)
+
     def __init__(self, runner: TaskRunner, graph_source: Callable[[], Any], parent: Optional[QWidget] = None, *,
                  loader: Callable[[Any, str], UserProfile] = load_user_profile) -> None:
         super().__init__(parent)
@@ -245,6 +251,9 @@ class UserDetail(QWidget):
         self.general = GeneralTab()
         self.tabs.addTab(self.general, "General")
         self.groups_tab = ListTab(("Member of", "Owns"))
+        for widget in self.groups_tab.lists.values():
+            widget.setToolTip("Double-click a group to open it on the Groups page.")
+            widget.itemDoubleClicked.connect(self._open_ref)
         self.methods_tab = ListTab(("Sign-in methods",))
         self.certs_tab = ListTab(("Certificate user IDs",))
         self.roles_tab = ListTab(("Active roles", "Eligible roles (PIM)"))
@@ -304,10 +313,9 @@ class UserDetail(QWidget):
         self._pending = False
         self.profile = profile
         self.general.show_profile(profile)
-        self.groups_tab.show_items("Member of", None if profile.groups is None else
-                                   sorted((g.label for g in profile.groups), key=str.casefold), "no groups")
-        self.groups_tab.show_items("Owns", None if profile.owned is None else
-                                   sorted((o.label for o in profile.owned), key=str.casefold), "nothing")
+        for title, refs, empty in (("Member of", profile.groups, "no groups"), ("Owns", profile.owned, "nothing")):
+            ordered = None if refs is None else sorted(refs, key=lambda r: r.label.casefold())
+            self.groups_tab.show_items(title, None if ordered is None else [r.label for r in ordered], empty, ordered)
         self.methods_tab.show_items("Sign-in methods", profile.auth_methods, "none registered")
         # cert IDs come back as [] both when there are none and when they couldn't be read; the warning
         # list says which (the General tab shows it)
@@ -318,6 +326,11 @@ class UserDetail(QWidget):
         self.managers_tab.set_user(profile.id)
         self.stack.setCurrentWidget(self.tabs)
         self._tab_changed()
+
+    def _open_ref(self, item: Any) -> None:
+        ref = item.data(Qt.ItemDataRole.UserRole)
+        if ref is not None and ref.kind == "group":
+            self.group_opened.emit(ref.id)
 
     def _tab_changed(self, _index: int = 0) -> None:
         if self.tabs.currentWidget() is self.managers_tab and self.stack.currentWidget() is self.tabs:

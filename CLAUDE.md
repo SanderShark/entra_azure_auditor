@@ -43,12 +43,13 @@ entra_auditor/
                        ui (Rich rendering + `run_action`, the terminal driver for flow),
                        directory (load all users/groups once for local filtering),
                        group_pim (PIM for Groups), admin_units (AU reads; AU plans live in actions),
-                       managers (read-only "who can manage this user": Microsoft's role tables as data)
+                       managers (read-only "who can manage this user": Microsoft's role tables as data),
+                       groups (members/owners/memberOf of one group, for the Groups page)
   gui/                 PySide6 desktop app (`auditor gui`, optional extra `.[gui]`): tasks (thread pool ->
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
-                       pickers, admin_units_page, roles_page, main_window (nav | page stack), app
+                       pickers, groups_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~810 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~835 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -147,7 +148,8 @@ pydantic 2.14, Typer 0.29, Rich 14.3, questionary 2.1, httpx 0.28, MSAL 1.39). P
    property tabs; Roles / PIM page (directory roles + PIM for Groups, activate/deactivate); Administrative
    units page (flat AU list | members | properties + scoped roles; add/remove users and groups, edit settings);
    group memberships offered as elevation candidates. Next: role assignment management (owner to decide on
-   writes), Groups page, Audit, Action log, tenant switcher. Users also have a lazy "Who can manage" tab. Remaining design notes:
+   writes), Audit, Action log, tenant switcher. Users also have a lazy "Who can manage" tab; the Groups page
+   (members, owners, nesting) is done, without create/delete/edit of the group itself. Remaining design notes:
    - ADUC-style: navigation (Users, Groups, Roles/PIM, Audit, Action log) | list | property tabs
      (General, Groups, Sign-in methods, Certificate IDs, Roles, Activity).
    - Speed: load the directory once in the background (`$select`, `$top=999`, all pages), filter locally as

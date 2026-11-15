@@ -217,6 +217,10 @@ So far:
   administrative unit, active or PIM-eligible. It applies Microsoft's rules: a restricted management unit
   shields the user from tenant-wide admins, and a user's own admin roles limit who may reset their password.
   Built-in roles only; you need a role that can read role assignments (for example Global Reader).
+- **Groups:** every group loaded once and filtered as you type (Exchange-managed groups hidden unless asked
+  for); members, owners, properties and what the group belongs to; add/remove users, nested security groups
+  and owners. Synced, dynamic and Exchange-managed groups explain why they are read-only. Double-click moves
+  between users and groups.
 - **Administrative units:** units on the left, members in the middle, settings and scoped roles on the right
   (like OUs in ADUC, but AUs don't nest); add/remove users, groups and devices, edit name, description and
   dynamic membership.

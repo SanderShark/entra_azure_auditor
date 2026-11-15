@@ -56,6 +56,7 @@ class FakeTenant:
         self.scoped_eligible = []
         self.scoped_active = {}
         self.group_role_scope = {}   # group id -> directoryScopeId of the roles it holds (default '/')
+        self.unreadable_groups = set()   # group ids whose members/owners answer 403
         self.memberof_denied = False # True: memberOf answers 403 (the target's AUs can't be read)
         # who holds which admin role (opt-in; see add_role_holder): (role, principal id, scope, 'active'|'eligible')
         self.role_holders = []
@@ -212,8 +213,10 @@ class FakeTenant:
             kind, oid, edge = m.groups()
             if kind == 'groups' and edge in ('members', 'owners'):
                 store = self.members if edge == 'members' else self.owners
+                if oid in self.unreadable_groups:
+                    raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
                 for uid in sorted(store.get(oid, set())):
-                    yield {**self.users[uid], '@odata.type': '#microsoft.graph.user'}
+                    yield self._object(uid)
                 return
             if edge == 'memberOf' and self.memberof_denied:
                 raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
@@ -224,6 +227,9 @@ class FakeTenant:
                 yield from self._admin_units_of(oid)
                 return
             if kind == 'groups' and edge == 'memberOf':
+                for gid, ms in self.members.items():
+                    if oid in ms:
+                        yield {**self.groups[gid], '@odata.type': '#microsoft.graph.group'}
                 yield from self._admin_units_of(oid)
                 return
             if kind == 'users' and edge == 'ownedObjects':
@@ -337,6 +343,9 @@ class FakeTenant:
             gid, edge = m.groups()
             uid = json['@odata.id'].rsplit('/', 1)[-1]
             store = self.members if edge == 'members' else self.owners
+            if uid in self.groups and ('Unified' in self.groups[gid].get('groupTypes', [])
+                                       or 'Unified' in self.groups[uid].get('groupTypes', []) or edge == 'owners'):
+                raise GraphError('Request_BadRequest: unsupported reference', status_code=400, code='Request_BadRequest')
             if uid in store.setdefault(gid, set()):
                 raise GraphError("One or more added object references already exist for the following modified properties: 'members'.", status_code=400)
             store[gid].add(uid)

@@ -286,11 +286,26 @@ def _group_plan(action: str, title: str, group: GroupSummary, requests: list[Pla
     return plan
 
 
-def plan_add_group_members(group: GroupSummary, users: list[UserSummary],
+def _is_group(member: Any) -> bool:
+    return isinstance(member, GroupSummary) or getattr(member, "kind", None) == "group"
+
+
+def plan_add_group_members(group: GroupSummary, users: list[Any],
                            base: str = DEFAULT_GRAPH_BASE) -> ActionPlan:
+    """``users`` are the objects to add: anything with ``id`` and ``label`` (users, or groups to nest).
+    Only a security group can contain groups, and only security groups: a Microsoft 365 group holds users
+    only and can't be nested (Graph answers a bare 400)."""
     _guard_group(group, membership=True)
     if not users:
         raise PlanError("No users given.")
+    nested = [m for m in users if _is_group(m)]
+    if nested and "Unified" in group.group_types:
+        raise PlanError(f"'{group.label}' is a Microsoft 365 group: it can only have users as members, not groups.")
+    unnestable = [m.label for m in nested if isinstance(m, GroupSummary) and "Unified" in m.group_types]
+    if unnestable:
+        raise PlanError("Microsoft 365 groups can't be members of another group: " + ", ".join(unnestable))
+    if any(m.id == group.id for m in nested):
+        raise PlanError("A group can't be a member of itself.")
     return _group_plan(
         "group.add_members", f"Add {len(users)} member(s) to {group.label}", group,
         [PlannedRequest("POST", f"/groups/{segment(group.id)}/members/$ref", _ref_body(base, u.id),
@@ -298,7 +313,7 @@ def plan_add_group_members(group: GroupSummary, users: list[UserSummary],
         ROLES_GROUP_MEMBERS, [f"+ {u.label}" for u in users])
 
 
-def plan_remove_group_members(group: GroupSummary, users: list[UserSummary]) -> ActionPlan:
+def plan_remove_group_members(group: GroupSummary, users: list[Any]) -> ActionPlan:
     _guard_group(group, membership=True)
     if not users:
         raise PlanError("No users given.")
@@ -321,7 +336,7 @@ def plan_add_group_owners(group: GroupSummary, users: list[UserSummary],
         ROLES_GROUP_OWNERS, [f"+ owner {u.label}" for u in users])
 
 
-def plan_remove_group_owners(group: GroupSummary, users: list[UserSummary]) -> ActionPlan:
+def plan_remove_group_owners(group: GroupSummary, users: list[Any]) -> ActionPlan:
     _guard_group(group, membership=False)
     if not users:
         raise PlanError("No users given.")

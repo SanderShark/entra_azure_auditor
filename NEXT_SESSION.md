@@ -17,7 +17,7 @@ Delete or rewrite this file once its first steps are done.
 3. **Set up and run the checks** (the environment's `python` is missing; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest     # 808 passed
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest     # 835 passed
    .venv/bin/ruff check .                                   # clean
    ```
 4. The scope bug (section 4) is **fixed**, and idea 1 ("Who can manage this user?") is **built**. Next: pick from the ideas (section 5) with the owner, and ask about
@@ -98,7 +98,18 @@ only, which is what Entra checks.
 7. Bulk changes from CSV with a full preview.
 8. Read-only mode for junior helpdesk staff (hide every write).
 9. Dynamic-rule preview before applying (the test API may be beta-only: check).
-Also still on the roadmap: Groups page, Audit page, Action log page, tenant switcher, packaging.
+Groups page: DONE (`gui/groups_page.py`, `toolkit/groups.py`; members, owners, nested security groups, memberOf).
+Not yet: create/delete a group, edit name/description/rule, "who can manage this group".
+Also still on the roadmap: Audit page, Action log page, tenant switcher, packaging.
+
+**EasyEntra comparison** (the owner wants to imitate it and do better; from easyentra.com, 2026-11-14). It is an
+ADUC-style Windows console for on-prem AD + Entra: users, groups, licences, mailbox settings, MFA settings,
+BitLocker, Windows LAPS, virtual user templates for onboarding, 20+ offboarding options, multi-tenant switching,
+delegated calendar access, a PowerShell module. We don't do on-prem AD or Exchange. Gaps to close, in the order
+suggested to the owner: licences (assign/remove, per-user tab) -> leaver workflow -> onboarding from a
+template user -> Devices page with BitLocker keys and LAPS -> tenant switcher -> sign-in method management
+(TAP, remove methods). Where we are already ahead: PIM just-in-time elevation, a preview of every change,
+"who can manage", administrative units, the audit.
 
 ## 6. Not verified against a live tenant
 
@@ -125,6 +136,7 @@ Docs pages used last session (re-check with the docs skill):
 - Privileged roles and permissions ("Who can reset passwords", "Who can perform sensitive actions" tables)
 - Restricted management administrative units (who is blocked, what stays allowed)
 - List unifiedRoleAssignments (example 1: `$filter=roleDefinitionId eq ..&$expand=principal`), List roleEligibilitySchedules
+- Add members (which object types a security / Microsoft 365 group can hold)
 - List devices (`Device.Read.All` or `Directory.Read.All`; AU links use the object `id`, not `deviceId`)
 
 ## 7. Working notes

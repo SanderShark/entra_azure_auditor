@@ -37,6 +37,7 @@ from ..toolkit.models import UserSummary
 from ..toolkit.search import get_user
 from .admin_units_page import AdminUnitsPage
 from .change import ChangeController
+from .groups_page import GroupsPage
 from .roles_page import RolesPage
 from .session import GuiSession
 from .tasks import TaskRunner
@@ -45,7 +46,7 @@ from .user_model import USER_ROLE, UserFilterProxy, UserTableModel
 
 FILTER_DELAY_MS = 150
 SECTIONS = ("Users", "Groups", "Administrative units", "Roles / PIM", "Audit", "Action log")
-READY = ("Users", "Administrative units", "Roles / PIM")
+READY = ("Users", "Groups", "Administrative units", "Roles / PIM")
 LATER = "Coming in a later milestone."
 
 
@@ -110,6 +111,7 @@ class MainWindow(QMainWindow):
 
         # -- properties ----------------------------------------------------------- #
         self.detail = UserDetail(runner, lambda: self.session.graph)
+        self.detail.group_opened.connect(self.show_group)
 
         self.users_page = QSplitter()
         self.users_page.addWidget(middle)
@@ -119,9 +121,11 @@ class MainWindow(QMainWindow):
         self.users_page.setSizes([760, 370])
 
         # -- pages ------------------------------------------------------------------- #
+        self.groups_page = GroupsPage(self)
         self.admin_units_page = AdminUnitsPage(self)
         self.roles_page = RolesPage(self)
-        self.pages: dict[str, QWidget] = {"Users": self.users_page, "Administrative units": self.admin_units_page,
+        self.pages: dict[str, QWidget] = {"Users": self.users_page, "Groups": self.groups_page,
+                                          "Administrative units": self.admin_units_page,
                                           "Roles / PIM": self.roles_page}
         self.stack = QStackedWidget()
         for page in self.pages.values():
@@ -198,6 +202,15 @@ class MainWindow(QMainWindow):
             self.load_directory()
         else:
             page.reload()
+
+    def show_group(self, group_id: str) -> None:
+        """Open a group on the Groups page (loading the page first if it hasn't been opened yet)."""
+        self.show_section("Groups")
+        page = self.groups_page
+        if page.loaded:
+            page.select_group(group_id)
+        else:
+            page.pending_group = group_id
 
     def show_user(self, user_id: str) -> bool:
         """Open a user on the Users page (e.g. double-clicked in an administrative unit)."""
