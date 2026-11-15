@@ -205,6 +205,11 @@ unattended audit (`AUDITOR_AUTH_MODE=app`). Tenants come from
 ]}
 ```
 
+Large tenants: the user list stays responsive with several hundred thousand user objects, and a box next to
+the filter chooses what is loaded (all users, members, guests, or only users synced from on-premises AD) as a
+server-side filter. Add `"user_scope": "members"` (or `guests`, `synced`) to a tenant in `tenants.json` to start
+with that scope.
+
 Each tenant keeps its own token cache (`~/.entra_auditor/tenants/<tenant id>.token_cache.json`). The app
 registration needs **Allow public client flows** for device code, and the `http://localhost` redirect URI
 (Mobile and desktop platform) for browser sign-in.

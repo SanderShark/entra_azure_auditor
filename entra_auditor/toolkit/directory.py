@@ -15,6 +15,19 @@ from .search import GROUP_SELECT, USER_SELECT, _group, _user
 PAGE_SIZE = 999   # the largest page Graph allows for /users
 
 
+# Which user objects to load. A tenant can hold far more user objects than people (guests, cross-tenant
+# sync): one with 30,000 staff and 300,000 objects takes hundreds of requests to load in full. Each scope is
+# a server-side $filter, so the others are never transferred. (userType and onPremisesSyncEnabled both
+# support $filter eq; note that cross-tenant-synced users are often userType Member.)
+USER_SCOPES: dict[str, tuple[str, Optional[str]]] = {
+    "all": ("All users", None),
+    "members": ("Members only", "userType eq 'Member'"),
+    "guests": ("Guests only", "userType eq 'Guest'"),
+    "synced": ("Synced from on-premises AD", "onPremisesSyncEnabled eq true"),
+}
+DEFAULT_USER_SCOPE = "all"
+
+
 class LoadCancelled(Exception):
     """The caller asked the load to stop (e.g. the user switched tenant or closed the window)."""
 
@@ -25,10 +38,14 @@ def load_users(
     on_progress: Optional[Callable[[int], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     page_size: int = PAGE_SIZE,
+    scope: str = DEFAULT_USER_SCOPE,
 ) -> list[UserSummary]:
-    """Every user in the tenant, sorted by display name. Reports the running count once per page."""
+    """Every user in ``scope`` (see USER_SCOPES), sorted by display name. Reports the running count once
+    per page."""
+    if scope not in USER_SCOPES:
+        raise ValueError(f"Unknown user scope {scope!r}; use one of: {', '.join(USER_SCOPES)}.")
     users: list[UserSummary] = []
-    for raw in graph.get_paged("/users", select=USER_SELECT, top=page_size):
+    for raw in graph.get_paged("/users", select=USER_SELECT, top=page_size, filter=USER_SCOPES[scope][1]):
         users.append(_user(raw, ""))
         if len(users) % page_size == 0:
             if should_cancel is not None and should_cancel():

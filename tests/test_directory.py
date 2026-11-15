@@ -71,3 +71,18 @@ def test_fifty_thousand_users_load_quickly():
     start = time.perf_counter()
     users = load_users(FakeGraph({"/users": many(50_000)}))
     assert len(users) == 50_000 and time.perf_counter() - start < 5
+
+
+def test_a_scope_becomes_a_server_side_filter_and_an_unknown_one_is_refused():
+    import pytest
+
+    from entra_auditor.toolkit.directory import USER_SCOPES, load_users
+    from tests.fakes import FakeTenant
+    t = FakeTenant()
+    assert len(load_users(t)) == 8 and t.filters == []                       # "all" sends no filter
+    assert [u.id for u in load_users(t, scope="guests")] == ["u-guest"] and t.filters[-1] == "userType eq 'Guest'"
+    assert [u.id for u in load_users(t, scope="synced")] == ["u-sync"]
+    assert len(load_users(t, scope="members")) == 7
+    assert set(USER_SCOPES) == {"all", "members", "guests", "synced"}
+    with pytest.raises(ValueError, match="Unknown user scope"):
+        load_users(t, scope="everyone")

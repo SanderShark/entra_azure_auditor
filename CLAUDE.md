@@ -52,7 +52,7 @@ entra_auditor/
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, leaver (offboarding dialog), onboarding (new-user dialog), groups_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~885 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~895 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -115,6 +115,11 @@ tests/                 ~885 tests, no network; fakes.py, builders.py, conftest.p
   in from the response. Such requests are retried on 404/"does not exist" (the new object isn't replicated
   yet: nothing was applied, so re-sending a POST is safe there). A failed creation always stops the plan, and
   "already exists" on a creation is a failure, never "already in that state".
+- Scale: the owner's tenant has ~30k staff but 300k+ user objects (guests, cross-tenant sync). A
+  QSortFilterProxyModel with a Python `filterAcceptsRow` took 26 s to sort and 5 s to clear the filter at that
+  size; `gui/user_model.UserFilterProxy` is now a plain model that filters in one pass and caches one sort per
+  column (0.1 s). Benchmark anything that touches "all users" at 300k (there is a test). Loading can be
+  narrowed with `directory.USER_SCOPES` (server-side `$filter`); 300k `UserSummary` objects cost ~650 MB.
 - The property pane is narrow: a five-column table there hid its most important column behind a scrollbar
   (seen only in a screenshot). Use wrapped list entries in detail tabs.
 - Qt makes a dialog's first accept button the default on show: the change preview forced Cancel back as the

@@ -17,7 +17,7 @@ Delete or rewrite this file once its first steps are done.
 3. **Set up and run the checks** (the environment's `python` is missing; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest     # 886 passed
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest     # 894 passed
    .venv/bin/ruff check .                                   # clean
    ```
 4. The scope bug (section 4) is **fixed**, and idea 1 ("Who can manage this user?") is **built**. Next: pick from the ideas (section 5) with the owner, and ask about
@@ -60,7 +60,17 @@ administrative units (`add_admin_unit`) and devices, all enforcing Entra's rules
   read-only for now [recommended until PIM is tested live], (2) PIM-eligible assignments only, (3) eligible and
   permanent active. Writes would need Privileged Role Administrator and `RoleManagement.ReadWrite.Directory`.
 - **Licence** for the repo: `LICENSE` was deleted on purpose; don't add one until the owner chooses.
-- Owner's biggest tenant size was never given (assumed under 50k users).
+- Tenant size (answered 2026-11-15): ~30k users but 300k+ user objects (guests, cross-tenant sync). The list model
+  was rewritten for that and a load scope added (all / members / guests / synced; `user_scope` in tenants.json).
+  Still open: which scope really is "their 30k" (cross-tenant-synced users may be userType Member), memory at 300k
+  (~650 MB; slimmer row objects would fix it), and the same treatment for the Groups page and the pickers.
+- **Entra Connect sync-scoping rules** (owner's idea, low priority, sysadmin-only): they keep objects out of sync by a
+  designated OU and by `extensionAttribute14 = "no0365sync"`; other tenants differ. Wanted: import the rules into
+  the tool, maybe a rule builder. Constraints: Connect Sync rules live on the Connect server, not in Graph, so the
+  tool needs an export (the Connect configuration export JSON, or `Get-ADSyncRule` output); Cloud Sync scoping IS
+  in Graph (synchronization jobs). Questions to ask first: Connect Sync or Cloud Sync? What should the tool do with
+  the rules: explain "why is/isn't this user synced", flag cloud objects that should have been filtered, or
+  generate rules? Nothing built yet.
 
 ## 4. Fixed: PIM role scope was ignored
 

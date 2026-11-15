@@ -96,3 +96,16 @@ def test_user_settings_use_the_tenants_cache_and_never_app_mode(isolated_env):
     assert settings.authority == f"https://login.microsoftonline.us/{GUID}"
     with pytest.raises(ValueError):
         user_settings(tenant, AuthMode.APP, [])
+
+
+def test_a_tenant_can_name_the_users_to_load_and_a_wrong_name_is_refused():
+    import pytest
+
+    from entra_auditor.tenants import USER_SCOPE_NAMES, TenantConfigError, parse_tenants
+    from entra_auditor.toolkit.directory import USER_SCOPES
+    base = '{"tenants": [{"name": "Big", "tenant_id": "contoso.com", "client_id": "c1"%s}]}'
+    assert parse_tenants(base % "")[0].user_scope == "all"
+    assert parse_tenants(base % ', "user_scope": "synced"')[0].user_scope == "synced"
+    with pytest.raises(TenantConfigError, match="user_scope must be one of"):
+        parse_tenants(base % ', "user_scope": "everyone"')
+    assert set(USER_SCOPE_NAMES) == set(USER_SCOPES)            # the two lists must not drift apart

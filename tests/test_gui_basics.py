@@ -129,3 +129,57 @@ def test_filtering_fifty_thousand_users_is_fast_enough_to_feel_instant(qtbot):
     proxy.set_filter_text("finance user1")
     elapsed = time.perf_counter() - start
     assert proxy.rowCount() > 0 and elapsed < 1.0
+
+
+def test_three_hundred_thousand_users_filter_sort_and_clear_without_freezing(qtbot):
+    """The owner's tenant: ~30k staff but 300k user objects. With a QSortFilterProxyModel this took 26 s to sort
+    and 5 s to clear the filter; the bounds here are generous but would catch that coming back."""
+    model = UserTableModel()
+    model.set_users([UserSummary(id=f"u{i}", display_name=f"User {i:06d}", upn=f"user{i}@contoso.com",
+                                 department=f"Dept {i % 50}") for i in range(300_000)])
+    proxy = UserFilterProxy()
+    proxy.setSourceModel(model)
+    timings = {}
+    for name, action in (("sort", lambda: proxy.sort(1, Qt.SortOrder.DescendingOrder)),
+                         ("filter", lambda: proxy.set_filter_text("dept 7 user 00")),
+                         ("clear", lambda: proxy.set_filter_text(""))):
+        start = time.perf_counter()
+        action()
+        timings[name] = time.perf_counter() - start
+    assert proxy.rowCount() == 300_000 and all(seconds < 3.0 for seconds in timings.values()), timings
+
+
+def test_sorting_orders_by_the_column_ignoring_case_and_filtering_keeps_that_order(models):
+    model, proxy = models
+    proxy.sort(0, Qt.SortOrder.AscendingOrder)
+    shown = [proxy.index(r, 0).data() for r in range(proxy.rowCount())]
+    assert shown == sorted(shown, key=str.casefold) and shown[0] == "Ada Admin"
+    proxy.sort(0, Qt.SortOrder.DescendingOrder)
+    assert [proxy.index(r, 0).data() for r in range(proxy.rowCount())] == shown[::-1]
+    proxy.set_filter_text("bob")
+    assert [proxy.index(r, 0).data() for r in range(proxy.rowCount())] == ["Bob Stone", "Bob Smith"]
+    proxy.sort(1, Qt.SortOrder.AscendingOrder)                  # by UPN: bob.smith@ before bob@
+    assert [proxy.index(r, 0).data() for r in range(proxy.rowCount())] == ["Bob Smith", "Bob Stone"]
+
+
+def test_the_selection_stays_on_its_user_through_filtering_and_sorting(models):
+    from PySide6.QtCore import QPersistentModelIndex
+    model, proxy = models
+    proxy.sort(0, Qt.SortOrder.AscendingOrder)
+    row = next(r for r in range(proxy.rowCount()) if proxy.index(r, 0).data(USER_ROLE).id == "u-bob")
+    kept = QPersistentModelIndex(proxy.index(row, 0))
+    proxy.sort(0, Qt.SortOrder.DescendingOrder)
+    assert kept.isValid() and kept.data(USER_ROLE).id == "u-bob" and kept.row() != row
+    proxy.set_filter_text("stone")
+    assert kept.isValid() and kept.row() == 0 and kept.data(USER_ROLE).id == "u-bob"
+    proxy.set_filter_text("alice")                              # filtered out: the selection lets go
+    assert not kept.isValid()
+
+
+def test_a_changed_user_is_shown_and_refiltered(models):
+    model, proxy = models
+    proxy.set_filter_text("disabled")
+    assert proxy.rowCount() == 0
+    alice = next(u for u in model.users if u.id == "u-alice")
+    model.update_user(alice.model_copy(update={"account_enabled": False}))
+    assert [proxy.index(r, 0).data() for r in range(proxy.rowCount())] == ["Alice Ng"]

@@ -692,3 +692,29 @@ def test_a_user_can_be_created_without_a_template_and_bad_input_is_explained(qtb
     wait_for(qtbot, ctrl, PlanDialog).apply_button.click()
     wait_for(qtbot, ctrl, ResultDialog).accept()
     assert tenant.users["new-1"]["userPrincipalName"] == "sol@contoso.com"
+
+
+# ---- which users are loaded -----------------------------------------------------------------------
+
+def test_the_load_scope_filters_on_the_server_and_says_what_is_shown(qtbot, window):
+    win = window()
+    assert win.user_scope == "all" and win.count_label.text() == "8 users"
+    win.scope_box.setCurrentIndex(win.scope_box.findData("guests"))
+    qtbot.waitUntil(lambda: not win.loading and win.model.rowCount() == 1)
+    assert win.count_label.text() == "1 user (guests only)" and win.session.graph.filters[-1] == "userType eq 'Guest'"
+    win.scope_box.setCurrentIndex(win.scope_box.findData("synced"))
+    qtbot.waitUntil(lambda: not win.loading and [u.id for u in win.model.users] == ["u-sync"])
+    win.scope_box.setCurrentIndex(win.scope_box.findData("members"))
+    qtbot.waitUntil(lambda: not win.loading and win.model.rowCount() == 7)
+    assert all(u.user_type == "Member" for u in win.model.users)
+
+
+def test_the_tenant_can_set_its_starting_scope(qtbot, runner):
+    import dataclasses
+    session = FakeSession()
+    session.tenant = dataclasses.replace(session.tenant, user_scope="synced")
+    win = MainWindow(session, runner, change_sleep=lambda s: None)
+    qtbot.addWidget(win)
+    win.load_directory()
+    qtbot.waitUntil(lambda: not win.loading)
+    assert win.user_scope == "synced" and [u.id for u in win.model.users] == ["u-sync"]

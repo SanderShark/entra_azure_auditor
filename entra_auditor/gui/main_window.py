@@ -14,6 +14,8 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QComboBox,
     QDialog,
     QAbstractItemView,
     QHeaderView,
@@ -35,6 +37,7 @@ from PySide6.QtWidgets import (
 from ..toolkit.actions import PlanError, plan_set_enabled
 from ..toolkit.leaver import LeaverFacts, gather_leaver_facts, plan_leaver
 from ..toolkit.onboarding import Template, gather_template, plan_onboard
+from ..toolkit.directory import USER_SCOPES
 from ..toolkit.directory import LoadCancelled, load_users
 from ..toolkit.models import UserSummary
 from ..toolkit.search import get_user
@@ -91,6 +94,12 @@ class MainWindow(QMainWindow):
         self.filter_edit.setPlaceholderText("Filter: name, UPN, mail, title, department, employee id...")
         self.filter_edit.setClearButtonEnabled(True)
         self.count_label = QLabel()
+        self.scope_box = QComboBox()
+        self.scope_box.setToolTip("Which user objects to load. In a tenant with many guests or cross-tenant-synced "
+                                  "users, a narrower choice loads much faster.")
+        for key, (label, _filter) in USER_SCOPES.items():
+            self.scope_box.addItem(label, key)
+        self.scope_box.setCurrentIndex(max(self.scope_box.findData(getattr(session.tenant, "user_scope", "all")), 0))
         self.table = QTableView()
         self.table.setModel(self.proxy)
         self.table.setSortingEnabled(True)
@@ -110,7 +119,10 @@ class MainWindow(QMainWindow):
         middle = QWidget()
         middle_layout = QVBoxLayout(middle)
         middle_layout.setContentsMargins(0, 0, 0, 0)
-        middle_layout.addWidget(self.filter_edit)
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(self.filter_edit, 1)
+        filter_row.addWidget(self.scope_box)
+        middle_layout.addLayout(filter_row)
         middle_layout.addWidget(self.table)
         middle_layout.addWidget(self.count_label)
 
@@ -187,6 +199,7 @@ class MainWindow(QMainWindow):
         self.proxy.modelReset.connect(self._update_count)
         self.proxy.layoutChanged.connect(self._update_count)
         self.load_progress.connect(self._on_progress)
+        self.scope_box.currentIndexChanged.connect(lambda _index: self.load_directory(restart=True))
         self.nav.currentRowChanged.connect(self._section_changed)
         self._update_count()
 
@@ -245,20 +258,26 @@ class MainWindow(QMainWindow):
     # -- directory ------------------------------------------------------------------ #
 
     @Slot()
-    def load_directory(self) -> None:
-        if self.loading:
+    def load_directory(self, restart: bool = False) -> None:
+        """Load the users in the chosen scope. ``restart`` abandons a load that is still running (the
+        scope was changed): its pages stop at the next one and its result is dropped."""
+        if self.loading and not restart:
             return
         self._load_generation += 1
-        generation, graph = self._load_generation, self.session.graph
+        generation, graph, scope = self._load_generation, self.session.graph, self.user_scope
         self.loading = True
         self.refresh_action.setEnabled(False)
         self._load_started = time.perf_counter()
         self.statusBar().showMessage("Loading users...")
         self.runner.submit(
-            lambda: self._loader(graph, on_progress=self.load_progress.emit,
+            lambda: self._loader(graph, on_progress=self.load_progress.emit, scope=scope,
                                  should_cancel=lambda: self._closing or generation != self._load_generation),
             lambda users: self._loaded(generation, users),
             lambda exc: self._load_failed(generation, exc))
+
+    @property
+    def user_scope(self) -> str:
+        return self.scope_box.currentData() or "all"
 
     @Slot(int)
     def _on_progress(self, count: int) -> None:
@@ -300,10 +319,10 @@ class MainWindow(QMainWindow):
         total, shown = self.model.rowCount(), self.proxy.rowCount()
         if self.loading and total == 0:
             self.count_label.setText("Loading...")
-        elif shown == total:
-            self.count_label.setText(f"{total:,} users")
         else:
-            self.count_label.setText(f"{shown:,} of {total:,} users")
+            scope = "" if self.user_scope == "all" else f" ({USER_SCOPES[self.user_scope][0].lower()})"
+            noun = "user" if total == 1 else "users"
+            self.count_label.setText((f"{total:,} {noun}" if shown == total else f"{shown:,} of {total:,} {noun}") + scope)
 
     def selected_user(self) -> Optional[UserSummary]:
         index = self.table.selectionModel().currentIndex()

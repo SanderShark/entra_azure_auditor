@@ -557,6 +557,10 @@ class FakeTenant:
                 ok = any((v in u['proxyAddresses'] for v in vals))
             elif 'otherMails/any' in flt:
                 ok = any((v in u['otherMails'] for v in vals))
+            elif 'userType eq' in flt:
+                ok = u.get('userType') == vals[0]
+            elif flt == 'onPremisesSyncEnabled eq true':
+                ok = bool(u.get('onPremisesSyncEnabled'))
             elif 'startswith' in flt:
                 ok = any(((u.get(f) or '').lower().startswith(vals[0].lower()) for f in ('userPrincipalName', 'mail', 'displayName')))
             elif 'userPrincipalName eq' in flt:
