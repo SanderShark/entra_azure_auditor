@@ -17,7 +17,7 @@ Delete or rewrite this file once its first steps are done.
 3. **Set up and run the checks** (the environment's `python` is missing; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest     # 907 passed
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest     # 910 passed
    .venv/bin/ruff check .                                   # clean
    ```
 4. The scope bug (section 4) is **fixed**, and idea 1 ("Who can manage this user?") is **built**. Next: pick from the ideas (section 5) with the owner, and ask about
@@ -124,7 +124,9 @@ that aren't a live user, checking the UPN domain against verified domains, a CLI
 -> ~~Devices page with BitLocker keys and LAPS~~ (DONE: `toolkit/devices.py`, `gui/devices_page.py`; not yet: device
 enable/disable/delete, owners and registered users, a user's devices on the user's tabs; the device table is a
 QTableWidget and will be slow with tens of thousands of devices: give it the Users-list treatment)
--> tenant switcher and sign-in method management (TAP, remove methods): NOT STARTED -> onboarding from a
+-> ~~tenant switcher~~ (DONE: "Switch tenant..." closes the window and `gui/app.session_loop` signs in again)
+-> sign-in method management (Temporary Access Pass, removing methods): NOT STARTED. Check the docs per method
+type first (each type has its own delete endpoint; TAP is POST .../temporaryAccessPassMethods). -> onboarding from a
 template user -> Devices page with BitLocker keys and LAPS -> tenant switcher -> sign-in method management
 (TAP, remove methods). Where we are already ahead: PIM just-in-time elevation, a preview of every change,
 "who can manage", administrative units, the audit.

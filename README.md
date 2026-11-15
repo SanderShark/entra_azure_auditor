@@ -210,6 +210,9 @@ the filter chooses what is loaded (all users, members, guests, or only users syn
 server-side filter. Add `"user_scope": "members"` (or `guests`, `synced`) to a tenant in `tenants.json` to start
 with that scope.
 
+**Switch tenant...** in the toolbar closes the current tenant and returns to the sign-in dialog; each tenant
+keeps its own sign-in, so going back to one you used earlier is usually silent.
+
 Each tenant keeps its own token cache (`~/.entra_auditor/tenants/<tenant id>.token_cache.json`). The app
 registration needs **Allow public client flows** for device code, and the `http://localhost` redirect URI
 (Mobile and desktop platform) for browser sign-in.

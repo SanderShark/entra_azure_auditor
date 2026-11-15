@@ -718,3 +718,36 @@ def test_the_tenant_can_set_its_starting_scope(qtbot, runner):
     win.load_directory()
     qtbot.waitUntil(lambda: not win.loading)
     assert win.user_scope == "synced" and [u.id for u in win.model.users] == ["u-sync"]
+
+
+# ---- switching tenant ---------------------------------------------------------------------------------
+
+def test_switch_tenant_closes_the_window_and_asks_the_app_to_sign_in_again(qtbot, window):
+    win = window()
+    assert not win.switch_requested
+    win.switch_action.trigger()
+    assert win.switch_requested and not win.isVisible() and win._closing
+
+
+def test_switching_is_refused_while_a_change_is_running(qtbot, window, monkeypatch):
+    said = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: said.append(a[2]))
+    win = window()
+    win.select_user("u-alice")
+    win.toggle_action.trigger()
+    qtbot.waitUntil(lambda: win.change is not None)
+    ctrl = win.change
+    win.switch_action.trigger()
+    assert not win.switch_requested and win.isVisible() and "Finish the current change" in said[0]
+    wait_for(qtbot, ctrl, PlanDialog).cancel_button.click()
+    qtbot.waitUntil(lambda: win.change is None)
+
+
+def test_the_app_signs_in_again_after_a_switch_and_ends_otherwise():
+    from entra_auditor.gui.app import session_loop
+    sessions, worked = iter(["contoso", "fabrikam", None]), []
+    assert session_loop(lambda: next(sessions), lambda s: (worked.append(s), s == "contoso")[1]) == 0
+    assert worked == ["contoso", "fabrikam"]                    # switched once, then closed normally
+    assert session_loop(lambda: None, lambda s: False) == 1     # the first sign-in was cancelled
+    sessions = iter(["contoso", None])
+    assert session_loop(lambda: next(sessions), lambda s: True) == 0     # cancelled after a switch: just end

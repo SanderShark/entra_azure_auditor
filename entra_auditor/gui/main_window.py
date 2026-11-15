@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
         self._loader = loader
         self._change_sleep = change_sleep
         self._closing = False
+        self.switch_requested = False       # set by "Switch tenant...": the app signs in again after closing
         self._load_generation = 0
         self.loading = False
         self.change: Optional[ChangeController] = None
@@ -185,6 +186,12 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.new_user_action)
         self.dialog: Optional[QDialog] = None
         self._gathering = False
+        toolbar.addSeparator()
+        self.switch_action = QAction("Switch tenant...", self)
+        self.switch_action.setToolTip("Close this tenant and sign in to another one (each tenant keeps its own "
+                                      "sign-in).")
+        self.switch_action.triggered.connect(self.switch_tenant)
+        toolbar.addAction(self.switch_action)
         self.addToolBar(toolbar)
 
         self.identity_label = QLabel(f"{session.identity.removeprefix('user:')}  |  {session.tenant.name}")
@@ -512,6 +519,15 @@ class MainWindow(QMainWindow):
         if selected is not None and selected.id == user.id:
             self._update_actions(user)
             self.detail.show_user(user)
+
+    @Slot()
+    def switch_tenant(self) -> None:
+        """Close this window so the app can sign in to another tenant. Not while a change is running."""
+        if self.change is not None:
+            QMessageBox.information(self, "A change is running", "Finish the current change before switching tenant.")
+            return
+        self.switch_requested = True
+        self.close()
 
     # -- shutdown --------------------------------------------------------------------------------- #
 

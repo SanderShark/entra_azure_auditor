@@ -53,7 +53,7 @@ entra_auditor/
                        UI thread), session, signin, user_model, user_detail, change (flow as dialogs),
                        pickers, leaver (offboarding dialog), onboarding (new-user dialog), groups_page, devices_page, admin_units_page, roles_page, main_window (nav | page stack), app
 .github/workflows/ci.yml   ruff (blocking) + pytest on Python 3.10 and 3.13
-tests/                 ~905 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
+tests/                 ~910 tests, no network; fakes.py, builders.py, conftest.py, gui_support.py;
                        test_gui_*.py use pytest-qt, run headless, and skip without PySide6
 ```
 
@@ -170,7 +170,8 @@ pydantic 2.14, Typer 0.29, Rich 14.3, questionary 2.1, httpx 0.28, MSAL 1.39). P
    property tabs; Roles / PIM page (directory roles + PIM for Groups, activate/deactivate); Administrative
    units page (flat AU list | members | properties + scoped roles; add/remove users and groups, edit settings);
    group memberships offered as elevation candidates. Next: role assignment management (owner to decide on
-   writes), Audit, Action log, tenant switcher. Users also have a lazy "Who can manage" tab; the Groups page
+   writes), Audit, Action log. The tenant switcher is done (`gui/app.session_loop`, "Switch tenant..."; the second
+   `app.exec()` after a sign-in dialog is untested outside the fake). Users also have a lazy "Who can manage" tab; the Groups page
    (members, owners, nesting) is done, without create/delete/edit of the group itself. Remaining design notes:
    - ADUC-style: navigation (Users, Groups, Roles/PIM, Audit, Action log) | list | property tabs
      (General, Groups, Sign-in methods, Certificate IDs, Roles, Activity).
