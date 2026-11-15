@@ -1,5 +1,8 @@
 # entra-auditor: project notes for Claude Code
 
+> **Starting a new session? Read `NEXT_SESSION.md` first** (handoff: push status, a known bug, open
+> decisions, ideas). Remove this line when that file is retired.
+
 Python tool for Microsoft Entra ID: a **read-only security audit** (checks, JSON/CSV/HTML reports) and an
 **identity toolkit** that changes the tenant (users, passwords, certificate IDs, groups) with **PIM
 just-in-time elevation**. Everything goes directly to Microsoft Graph; there is no server component.
