@@ -802,10 +802,15 @@ def menu(mode: ModeOpt = None) -> None:
 @app.command()
 def gui() -> None:
     """Open the desktop app (needs the optional Qt dependency: pip install ".[gui]")."""
-    from .gui import MISSING_MESSAGE, qt_available
+    from .gui import MISSING_MESSAGE, display_problem, qt_available
 
     if not qt_available():
         _fail(MISSING_MESSAGE)
+    problem, warning = display_problem()
+    if problem:
+        _fail(problem)
+    if warning:
+        err.print(f"[yellow]{warning}[/]")
     from .gui.app import run
 
     raise typer.Exit(run())

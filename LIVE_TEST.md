@@ -6,7 +6,9 @@ so expect some failures: each one you report is worth more than a dozen passing 
 
 ## 0. Before you start
 
-- [ ] Install: `python -m pip install ".[gui]"` (Python 3.10 or later).
+- [ ] Install: `python -m pip install ".[gui]"` (Python 3.10 or later). Run `auditor gui` from a terminal
+      inside your desktop session, not over plain SSH. On Linux, Qt also needs `libxcb-cursor`
+      (Arch: `sudo pacman -S xcb-util-cursor`; Debian/Ubuntu: `sudo apt install libxcb-cursor0`).
 - [ ] App registration: **Allow public client flows** = Yes; platform **Mobile and desktop applications** with
       redirect URI `http://localhost`; the **delegated** permissions in README "Setup for the toolkit", with
       admin consent. Optional ones (PIM for Groups, `AdministrativeUnit.ReadWrite.All`, `BitlockerKey.Read.All`,

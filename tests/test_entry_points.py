@@ -27,6 +27,7 @@ def test_env_example_lists_exactly_the_settings_the_code_reads():
     code = "\n".join(p.read_text(encoding="utf-8") for p in _repo("entra_auditor").rglob("*.py"))
     read = set(re.findall(r"""(?:environ|env|values)\)?\.get\(\s*["']([A-Z][A-Z_]+)["']""", code))
     read |= set(re.findall(r"""environ\[["']([A-Z][A-Z_]+)["']\]""", code))
+    read = {name for name in read if name.startswith(("AUDITOR_", "AZURE_", "GRAPH_"))}    # ours, not DISPLAY etc.
     documented = set(re.findall(r"^#?\s*([A-Z][A-Z_]+)=", _repo(".env.example").read_text(encoding="utf-8"), re.M))
     assert read - documented == set(), "settings the code reads that .env.example doesn't mention"
     assert documented - read == set(), ".env.example mentions settings the code no longer reads"

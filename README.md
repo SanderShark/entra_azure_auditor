@@ -187,6 +187,10 @@ passwords).
 
 Trying it in a live tenant for the first time? Follow [LIVE_TEST.md](LIVE_TEST.md).
 
+On Linux, start it from a terminal in your desktop session (not over plain SSH), and install `libxcb-cursor`
+for X11 (Arch: `xcb-util-cursor`, Debian/Ubuntu: `libxcb-cursor0`). `auditor gui` checks both before Qt
+starts and says what is missing.
+
 A Qt window for the identity toolkit: users on the left, their properties on the right, and every change
 shown as a preview you confirm (with PIM elevation when Entra says you need a role).
 

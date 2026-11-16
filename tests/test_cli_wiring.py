@@ -161,10 +161,24 @@ def test_gui_starts_the_desktop_app(monkeypatch):
     pytest.importorskip("PySide6")
     import entra_auditor.gui.app as gui_app
 
+    import entra_auditor.gui as gui
+
     started = []
     monkeypatch.setattr(gui_app, "run", lambda *a, **k: started.append(True) or 0)
+    monkeypatch.setattr(gui, "display_problem", lambda: (None, None))
     code, _out, _ = invoke("gui")
     assert code == 0 and started == [True]
+
+
+def test_gui_without_a_display_explains_instead_of_crashing(monkeypatch):
+    pytest.importorskip("PySide6")
+    import entra_auditor.gui as gui
+    import entra_auditor.gui.app as gui_app
+
+    monkeypatch.setattr(gui_app, "run", lambda *a, **k: pytest.fail("Qt must not be started"))
+    monkeypatch.setattr(gui, "display_problem", lambda: (gui.NO_DISPLAY_MESSAGE, None))
+    code, out, _ = invoke("gui")
+    assert code == 1 and "graphical desktop" in out and "ssh -X" in out
 
 
 # ---- sync rules (offline) -----------------------------------------------------------------------
