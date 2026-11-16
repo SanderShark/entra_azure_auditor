@@ -52,6 +52,8 @@ entra_auditor/
                        leaver (offboarding: gather facts, then ONE pure multi-step plan, `plan_leaver`),
                        onboarding (create a user from a template user: `gather_template`, `plan_onboard`),
                        devices (BitLocker keys and LAPS passwords: read on demand, never logged),
+                       diagnostics (tenant check: token claims + one harmless read per feature; a report
+                       that names nobody; `auditor check`, gui/check_page.py)
                        syncrules + syncexpr + syncrules_cli (`auditor sync`: Entra Connect rules from an XML
                        export, OFFLINE: describe, lint, explain, diff, impact; no Graph, no sign-in;
                        syncexpr evaluates the IIF(...) expression language)

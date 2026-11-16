@@ -211,6 +211,11 @@ the filter chooses what is loaded (all users, members, guests, or only users syn
 server-side filter. Add `"user_scope": "members"` (or `guests`, `synced`) to a tenant in `tenants.json` to start
 with that scope.
 
+**Tenant check** (a page in the app, or `auditor check` on the command line): reads your token (its
+permissions and the roles active in it) and tries one harmless read per feature, so you see at once what
+works and what is missing, with the permission or role each failure needs. "Copy report" gives a summary
+that names no user, tenant or object, so it can be shared. Nothing is changed.
+
 **Read-only:** tick "Read-only" on the sign-in screen (or set `"read_only": true` for a tenant in
 `tenants.json`) to look around without any risk: every change and role activation is refused, write buttons
 are greyed out and the window says READ-ONLY. Giving up a role you already have active still works. On the

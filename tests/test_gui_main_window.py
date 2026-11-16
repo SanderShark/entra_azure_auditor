@@ -898,3 +898,30 @@ def test_the_read_only_choice_on_the_sign_in_screen_reaches_the_session(qtbot, r
     dialog2._attempt = 1
     dialog2._signed_in(1, other)
     assert other.read_only is True
+
+
+# ---- tenant check -------------------------------------------------------------------------------------
+
+def test_the_tenant_check_runs_when_opened_and_copies_a_report_that_names_nobody(qtbot, window):
+    from PySide6.QtGui import QGuiApplication
+    tenant = licence_tenant()
+    tenant.refuse_reads = [r"^/devices$"]
+    win = window(tenant)
+    win.show_section("Tenant check")
+    page = win.check_page
+    qtbot.waitUntil(lambda: page.report is not None)
+    outcomes = dict(page.outcomes())
+    assert outcomes["Devices"] == "DENIED" and outcomes["Users list"] == "OK"
+    assert page.summary.text().startswith(f"{len(outcomes) - 1} of {len(outcomes)} checks passed.")
+    assert "token couldn't be read" in page.summary.text()        # the fake session has no real token
+    assert "needs Device.Read.All" in page.table.item(list(outcomes).index("Devices"), 2).text()
+    page.copy_button.click()
+    copied = QGuiApplication.clipboard().text()
+    assert copied.startswith("entra-auditor") and "me@contoso.com" not in copied and "Contoso" not in copied
+    assert tenant.writes == []
+    calls = len(tenant.calls)
+    win.show_section("Users")
+    win.show_section("Tenant check")                             # coming back doesn't re-run by itself
+    assert len(tenant.calls) == calls
+    page.run_button.click()
+    qtbot.waitUntil(lambda: len(tenant.calls) > calls and not page.running)

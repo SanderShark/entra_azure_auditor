@@ -46,7 +46,7 @@ def test_every_command_builds_and_documents_itself():
 def test_the_expected_commands_exist():
     root = typer.main.get_command(app)
     assert {"run", "findings", "policies", "ca-report", "compare", "runs", "export", "permissions", "login", "logout",
-            "whoami", "menu", "toolkit", "id", "group", "pim"} <= set(root.commands)
+            "whoami", "menu", "toolkit", "id", "group", "pim", "check", "sync"} <= set(root.commands)
     assert {"search", "show", "edit", "enable", "disable", "revoke", "password", "cert-list", "cert-add", "cert-remove",
             "log"} <= set(root.commands["id"].commands)
     assert {"show", "add-member", "remove-member", "add-owner", "remove-owner", "stale"} <= set(root.commands["group"].commands)
@@ -219,3 +219,8 @@ def test_sync_impact_is_a_validator_with_an_exit_code(tmp_path):
     assert invoke("sync", "impact", old, old, people)[0] == 0
     assert invoke("sync", "impact", old, new, people, "--max-percent", "34")[0] == 0
     assert invoke("sync", "impact", old, new, people, "--max-percent", "33")[0] == 1
+
+
+def test_the_check_command_exists_and_documents_itself():
+    code, out, _ = invoke("check", "--help")
+    assert code == 0 and "names no user or tenant" in out

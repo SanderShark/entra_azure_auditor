@@ -69,6 +69,7 @@ class FakeTenant:
         self.replication_misses = 0      # how many requests about a just-created user answer 404 first
         self.created = []                # ids of users created through POST /users
         self.refuse = []                 # regexes: a write whose path matches answers 403 (needs a higher role)
+        self.refuse_reads = []           # regexes: a read (get_paged) whose path matches answers 403
         self.break_paths = []            # regexes: a write whose path matches answers 500
         self.unreadable_groups = set()   # group ids whose members/owners answer 403
         self.memberof_denied = False # True: memberOf answers 403 (the target's AUs can't be read)
@@ -205,6 +206,8 @@ class FakeTenant:
 
     def get_paged(self, path, **kw):
         self.calls.append(('GET', path))
+        if any(re.search(pattern, path) for pattern in self.refuse_reads):
+            raise GraphPermissionError('Authorization_RequestDenied', status_code=403, code='Authorization_RequestDenied')
         flt, params = (kw.get('filter') or '', kw.get('params') or {})
         if flt:
             self.filters.append(flt)
@@ -303,7 +306,7 @@ class FakeTenant:
                     if oid in ms:
                         yield {**self.groups[gid], '@odata.type': '#microsoft.graph.group'}
                 return
-        if re.match('/users/([^/]+)/authentication/methods$', path):
+        if re.match('/(users/([^/]+)|me)/authentication/methods$', path):
             yield {'@odata.type': '#microsoft.graph.passwordAuthenticationMethod', 'id': 'pw'}
             yield {'@odata.type': '#microsoft.graph.phoneAuthenticationMethod', 'id': 'ph'}
             return

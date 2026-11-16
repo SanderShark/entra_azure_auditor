@@ -1038,6 +1038,17 @@ def toolkit_menu(mode: ModeOpt = None) -> None:
     run_toolkit_menu(mode)
 
 
+def tenant_check(mode: ModeOpt = None) -> None:
+    """Check what your sign-in can do in this tenant. Prints a report that names no user or tenant."""
+    from .diagnostics import run_checks, session_token
+
+    with open_session(mode) as sess, graph_errors():
+        with console.status("Checking..."):
+            report = run_checks(sess.graph, session_token(sess), read_only=getattr(sess, "read_only", False))
+    console.print(t(report.text()))
+    raise typer.Exit(0 if all(r.ok for r in report.results) else 1)
+
+
 def register(app: typer.Typer) -> None:
     app.add_typer(id_app, name="id")
     app.add_typer(group_app, name="group")
@@ -1045,3 +1056,4 @@ def register(app: typer.Typer) -> None:
     from .syncrules_cli import sync_app      # offline: reads export files, never signs in
     app.add_typer(sync_app, name="sync")
     app.command("toolkit")(toolkit_menu)
+    app.command("check")(tenant_check)

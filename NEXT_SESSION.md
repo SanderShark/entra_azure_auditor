@@ -16,7 +16,7 @@ turns into a pile of patches.
 3. **Set up and run the checks** (the environment has no `python`; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 1018 passed (the default addopts hide the summary)
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 1027 passed (the default addopts hide the summary)
    .venv/bin/ruff check .                                               # clean
    ```
 4. Then: section 4 (what to build next) and section 3 (questions for the owner).
@@ -39,6 +39,7 @@ preview (exact requests; Cancel is the default) -> confirm -> on "forbidden" a P
 | **Devices** | `gui/devices_page.py`, `toolkit/devices.py` | BitLocker keys and LAPS passwords on request, shown once |
 | **Administrative units** | `gui/admin_units_page.py`, `toolkit/admin_units.py` | a two-level tree: unit, then Users / Groups / Devices nodes (counts once opened; a node filters the member table without reloading); settings, scoped roles |
 | **Roles / PIM** | `gui/roles_page.py`, `toolkit/pim.py`, `toolkit/group_pim.py` | your roles and PIM-for-Groups; activate/deactivate |
+| **Tenant check** | `gui/check_page.py`, `toolkit/diagnostics.py` | token permissions and roles, one harmless read per feature, a shareable report (also `auditor check`) |
 | Audit, Action log | - | still greyed out in the navigation |
 
 **Read-only sessions** (checkbox on the sign-in screen, `read_only` in tenants.json, `AUDITOR_READ_ONLY=1` on the
