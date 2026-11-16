@@ -185,6 +185,8 @@ passwords).
 
 ## Desktop app (preview)
 
+Trying it in a live tenant for the first time? Follow [LIVE_TEST.md](LIVE_TEST.md).
+
 A Qt window for the identity toolkit: users on the left, their properties on the right, and every change
 shown as a preview you confirm (with PIM elevation when Entra says you need a role).
 

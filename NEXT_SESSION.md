@@ -4,6 +4,12 @@ Handoff, rewritten 2026-11-15. Read this, then `CLAUDE.md` (project rules and le
 **Keep this file current** (the owner asked): update it in the same commit as each feature, and rewrite it when it
 turns into a pile of patches.
 
+## 0. Live test (2026-11-16)
+
+The owner tests in a live tenant for the first time, following `LIVE_TEST.md` (read-only first, then changes on a
+test user). Expect their report to contain the Tenant check report (`auditor check` / Tenant check page) and step
+results. Fix what they report before new features. They cannot share tenant data: work from the report.
+
 ## 1. First steps (in order)
 
 1. **Check what is pushed.** `main` and `gui` were pushed by the owner on 2026-11-15 (`origin/gui` at `7738fb0`).
