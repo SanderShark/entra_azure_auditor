@@ -925,3 +925,38 @@ def test_the_tenant_check_runs_when_opened_and_copies_a_report_that_names_nobody
     assert len(tenant.calls) == calls
     page.run_button.click()
     qtbot.waitUntil(lambda: len(tenant.calls) > calls and not page.running)
+
+
+# ---- temporary access pass -----------------------------------------------------------------------------
+
+def test_a_temporary_access_pass_is_created_from_the_sign_in_methods_tab_and_shown_once(qtbot, window):
+    from entra_auditor.gui.user_detail import TapDialog
+    tenant = FakeTenant(eligible=("Authentication Administrator",))
+    win = window(tenant)
+    win.select_user("u-alice")
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    detail = win.detail
+    assert detail.tap_button.isEnabled()
+    detail.tap_button.click()
+    qtbot.waitUntil(lambda: isinstance(detail.dialog, TapDialog))
+    detail.dialog.minutes.setValue(30)
+    detail.dialog.ok_button.click()
+    qtbot.waitUntil(lambda: win.change is not None)
+    ctrl = win.change
+    assert ctrl.flow.plan.requests[0].json == {"lifetimeInMinutes": 30, "isUsableOnce": True}
+    wait_for(qtbot, ctrl, PlanDialog).apply_button.click()
+    wait_for(qtbot, ctrl, ElevationDialog).activate_button.click()
+    justification = wait_for(qtbot, ctrl, JustificationDialog)
+    qtbot.keyClicks(justification.text, "Lost phone INC-55")
+    justification.ok_button.click()
+    result = wait_for(qtbot, ctrl, ResultDialog)
+    assert result.secret_labels["temporaryAccessPass"].text() == "T@p-9x2Q"
+    assert result.password_label is None and tenant.taps["u-alice"]["lifetimeInMinutes"] == 30
+    result.accept()
+
+
+def test_no_pass_can_be_created_read_only(qtbot, runner):
+    win = read_only_window(qtbot, runner)
+    win.select_user("u-alice")
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    assert not win.detail.tap_button.isEnabled() and win.detail.tap_button.toolTip() == "Read-only session."

@@ -211,3 +211,13 @@ def test_recovery_secrets_are_read_with_the_documented_requests(tmp_path):
         ("GET", "/v1.0/informationProtection/bitlocker/recoveryKeys/k1", {"$select": "key"}),
         ("GET", "/v1.0/directory/deviceLocalCredentials/hw-1", {"$select": "credentials"})]
     assert all(ua for *_rest, ua in seen)                                   # Graph requires a User-Agent here
+
+
+def test_a_temporary_access_pass_is_requested_as_documented_and_kept_out_of_the_log(tmp_path):
+    seen, handler = recorder({"/v1.0/users/u1/authentication/temporaryAccessPassMethods": httpx.Response(
+        201, json={"id": "t1", "temporaryAccessPass": "+drkzqAD", "lifetimeInMinutes": 60, "isUsableOnce": False})})
+    client = client_for(handler)
+    result = execute_plan(client, actions.plan_create_tap(USER, 60, usable_once=False), log_path=tmp_path / "log.jsonl")
+    assert seen == [("POST", "/v1.0/users/u1/authentication/temporaryAccessPassMethods",
+                     {"lifetimeInMinutes": 60, "isUsableOnce": False})]
+    assert result.secrets["temporaryAccessPass"] == "+drkzqAD" and "+drkzqAD" not in (tmp_path / "log.jsonl").read_text()

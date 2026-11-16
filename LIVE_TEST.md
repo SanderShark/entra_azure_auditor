@@ -46,8 +46,10 @@ Sign in again with "Read-only" unticked. Every change shows a preview first; Can
 4. [ ] **PIM elevation**: sign in WITHOUT the needed role active, try a change, and follow the offered
        activation (role choice, justification, wait, retry). This path has never run against Entra.
 5. [ ] Reset the test user's password (the new one is shown once).
-6. [ ] **New user...** with the test user selected (modelled on it); check groups, licences and manager.
-7. [ ] **Offboard...** the new user from step 6. Check the step-by-step result.
+6. [ ] Sign-in methods tab: **Create Temporary Access Pass** for the test user (needs TAP enabled in your
+       Authentication methods policy). Does the pass appear once, and does it work at sign-in?
+7. [ ] **New user...** with the test user selected (modelled on it); check groups, licences and manager.
+8. [ ] **Offboard...** the new user from step 7. Check the step-by-step result.
 
 ## 3. Offline sync-rule tools (no tenant access)
 

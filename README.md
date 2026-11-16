@@ -246,6 +246,10 @@ So far:
   everywhere, reset the password, remove direct licences, group memberships, optionally ownerships, and
   administrative units. It lists what it leaves alone (admin roles, dynamic/synced/Exchange groups, the
   mailbox), keeps going when a step is refused, and reports step by step what was and wasn't done.
+- **Temporary Access Pass** (button on the Sign-in methods tab): a time-limited code (10 minutes to 30 days,
+  one-time or reusable) the user signs in with to set up a new phone or security key. Entra generates it; it
+  is shown once and never logged. Needs Authentication Administrator (Privileged Authentication Administrator
+  for admins), and Temporary Access Pass enabled in the Authentication methods policy.
 - **Licences** (a tab on each user): what they hold and whether each licence is direct or inherited from a
   group; assign and remove direct licences from a tick list showing what is free, setting the usage location
   in the same change when it is missing.

@@ -194,6 +194,12 @@ class JustificationDialog(QDialog):
         return self.text.toPlainText().strip()
 
 
+SECRET_TEXT = {
+    "temporaryAccessPass": ("Temporary Access Pass", "Give it to the user over a secure channel (in person or by "
+                            "phone). They enter it instead of a password to set up their sign-in methods."),
+}
+
+
 class ResultDialog(QDialog):
     """Done: what happened. A password in the result is shown here once and never logged."""
 
@@ -229,6 +235,25 @@ class ResultDialog(QDialog):
             copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(password))
             layout.addWidget(copy)
             layout.addWidget(_label("The user must change it at next sign-in. Share it over a secure channel."))
+
+        self.secret_labels: dict[str, QLabel] = {}
+        for key, value in result.secrets.items():
+            if key == "password" or not value:
+                continue
+            title, advice = SECRET_TEXT.get(key, (key, "Share it over a secure channel."))
+            layout.addWidget(_label(f"{title} (shown once, never logged):", OK_STYLE))
+            label = _label(value, wrap=False)
+            font = QFont(label.font())
+            font.setStyleHint(QFont.StyleHint.Monospace)
+            font.setBold(True)
+            label.setFont(font)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            layout.addWidget(label)
+            copy = QPushButton(f"Copy {title.lower()}")
+            copy.clicked.connect(lambda _checked=False, text=value: QGuiApplication.clipboard().setText(text))
+            layout.addWidget(copy)
+            layout.addWidget(_label(advice))
+            self.secret_labels[key] = label
 
         layout.addStretch()       # extra height goes below the text, not between the lines
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)

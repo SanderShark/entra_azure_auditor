@@ -18,6 +18,8 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QSpinBox,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -35,11 +37,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..toolkit.actions import PlanError, plan_change_licences
+from ..toolkit.actions import TAP_MAX_MINUTES, TAP_MIN_MINUTES, PlanError, plan_change_licences, plan_create_tap
 from ..toolkit.licences import LicenceReport, load_user_licences
 from ..toolkit.managers import ManagerReport, who_can_manage
 from ..toolkit.models import UserProfile, UserSummary
-from ..toolkit.profile import load_user_profile
+from ..toolkit.profile import holds_admin_roles, load_user_profile
 from .tasks import TaskRunner
 
 SELECTION_DELAY_MS = 250
@@ -478,6 +480,39 @@ class LicencesTab(QWidget):
         dialog.open()
 
 
+class TapDialog(QDialog):
+    """How long a Temporary Access Pass lasts and whether it can be used more than once."""
+
+    def __init__(self, user_label: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Temporary Access Pass")
+        self.setMinimumWidth(460)
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"Create a Temporary Access Pass for {user_label}: a time-limited code they sign in with to "
+                       "set up their sign-in methods (a new phone, a lost security key). Any pass they already have "
+                       "is replaced.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        self.minutes = QSpinBox()
+        self.minutes.setRange(TAP_MIN_MINUTES, TAP_MAX_MINUTES)
+        self.minutes.setValue(60)
+        self.minutes.setSuffix(" minutes")
+        self.minutes.setSingleStep(15)
+        form.addRow("Valid for", self.minutes)
+        self.usable_once = QCheckBox("Usable once")
+        self.usable_once.setChecked(True)
+        self.usable_once.setToolTip("Unticked: usable repeatedly while valid, if the tenant's policy allows it.")
+        form.addRow("", self.usable_once)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setText("Preview change...")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
 class UserDetail(QWidget):
     """Placeholder text, or the tabs for one user."""
 
@@ -509,6 +544,13 @@ class UserDetail(QWidget):
             widget.itemDoubleClicked.connect(self._open_ref)
         self.licences_tab = LicencesTab(runner, graph_source)
         self.methods_tab = ListTab(("Sign-in methods",))
+        self.tap_button = QPushButton("Create Temporary Access Pass...")
+        self.tap_button.setEnabled(False)
+        self.tap_button.clicked.connect(self.create_tap)
+        self.methods_tab.layout().addWidget(self.tap_button)
+        self.on_plan: Optional[Callable[[Any, UserSummary], None]] = None    # set by the window: runs a change
+        self.read_only = False
+        self.dialog: Optional[QDialog] = None
         self.certs_tab = ListTab(("Certificate user IDs",))
         self.roles_tab = ListTab(("Active roles", "Eligible roles (PIM)"))
         self.tabs.addTab(self.groups_tab, "Groups")
@@ -574,6 +616,8 @@ class UserDetail(QWidget):
             ordered = None if refs is None else sorted(refs, key=lambda r: r.label.casefold())
             self.groups_tab.show_items(title, None if ordered is None else [r.label for r in ordered], empty, ordered)
         self.methods_tab.show_items("Sign-in methods", profile.auth_methods, "none registered")
+        self.tap_button.setEnabled(not self.read_only and self.on_plan is not None)
+        self.tap_button.setToolTip("Read-only session." if self.read_only else "")
         # cert IDs come back as [] both when there are none and when they couldn't be read; the warning
         # list says which (the General tab shows it)
         cert_unreadable = any("certificate" in w.lower() for w in profile.warnings)
@@ -584,6 +628,29 @@ class UserDetail(QWidget):
         self.licences_tab.set_user(self.user)
         self.stack.setCurrentWidget(self.tabs)
         self._tab_changed()
+
+    def create_tap(self) -> None:
+        user, profile = self.user, self.profile
+        if user is None or profile is None or self.on_plan is None or self.read_only:
+            return
+        dialog = TapDialog(user.full_label, self)
+        self.dialog = dialog
+
+        def answered(code: int) -> None:
+            self.dialog = None
+            if code != QDialog.DialogCode.Accepted:
+                return
+            try:
+                plan = plan_create_tap(user, dialog.minutes.value(), usable_once=dialog.usable_once.isChecked(),
+                                       target_is_admin=holds_admin_roles(profile))
+            except PlanError as exc:
+                QMessageBox.information(self, "Can't create a pass", str(exc))
+                return
+            if self.on_plan is not None:
+                self.on_plan(plan, user)
+
+        dialog.finished.connect(answered)
+        dialog.open()
 
     def _open_ref(self, item: Any) -> None:
         ref = item.data(Qt.ItemDataRole.UserRole)

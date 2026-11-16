@@ -213,6 +213,8 @@ class MainWindow(QMainWindow):
                                             "Sign in again without read-only mode to make changes.")
             self.statusBar().addPermanentWidget(self.read_only_label)
         self.detail.licences_tab.read_only = self.read_only
+        self.detail.read_only = self.read_only
+        self.detail.on_plan = lambda plan, user: self.start_change(plan, user)
 
         # -- wiring ---------------------------------------------------------------- #
         self._filter_timer = QTimer(self)

@@ -22,7 +22,7 @@ results. Fix what they report before new features. They cannot share tenant data
 3. **Set up and run the checks** (the environment has no `python`; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 1027 passed (the default addopts hide the summary)
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 1037 passed (the default addopts hide the summary)
    .venv/bin/ruff check .                                               # clean
    ```
 4. Then: section 4 (what to build next) and section 3 (questions for the owner).
@@ -90,8 +90,9 @@ command line): the flow refuses every change and role activation; write controls
 ## 4. What to build next
 
 Agreed order so far; items 1-5 of the EasyEntra list are done except the last:
-1. **Sign-in method management** (Temporary Access Pass, removing methods): NOT STARTED. Check the docs per method
-   type first (each type has its own delete endpoint; TAP is a POST on `temporaryAccessPassMethods`).
+1. **Sign-in method management:** Temporary Access Pass is DONE (`plan_create_tap`, button on the Sign-in methods
+   tab; secret via `PlannedRequest.reveal`). Not yet: removing methods (each type has its own delete endpoint:
+   check the docs per type), requiring re-registration of MFA, a CLI command for TAP.
 2. **Sync rules, next steps** (section 5): the owner's feedback from running it on their own export; an attribute
    list for the population CSV; proposing/validating a rule change; then a desktop page.
 3. **Scale follow-ups:** the Groups and Devices pages and the pickers still use `QTableWidget`/`QListWidget` and will

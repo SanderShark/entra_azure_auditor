@@ -73,7 +73,9 @@ tests/                 ~1010 tests (the count grows; see NEXT_SESSION.md), no ne
 2. **Secrets.** A password is shown to the operator once and is never logged, saved or put in a plan's
    loggable form (`PlannedRequest.secret_keys`, `audit_log._scrub`). Tokens stay in-process. The same goes for
    BitLocker recovery keys and LAPS passwords (`toolkit/devices.py`): read only on request, shown once in
-   `SecretDialog`, and the action log records the read, never the value.
+   `SecretDialog`, and the action log records the read, never the value. A secret that comes back in a
+   RESPONSE (Temporary Access Pass) is declared with `PlannedRequest.reveal`: `execute_plan` puts it in
+   `result.secrets` (shown once by `ResultDialog`); responses are never logged.
 3. **Unknown is not empty.** In `TenantSnapshot`, `None` = could not be collected, `[]` = collected and
    empty. Counts that can't be confirmed stay `None` and are never flagged.
 4. **Checks are pure:** `(snapshot, now, cfg) -> list[Finding]`. No network, no `datetime.now()`.

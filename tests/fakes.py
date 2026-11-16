@@ -520,6 +520,15 @@ class FakeTenant:
             self.reset_polls = 0
             body = {} if (json or {}).get('newPassword') else {'newPassword': 'Gen3rated!Pw42'}
             return GraphResponse(202, {'location': f'{BASE}/users/{m.group(1)}/authentication/operations/op1'}, body)
+        m = re.match('/users/([^/]+)/authentication/temporaryAccessPassMethods$', path)
+        if m and method == 'POST':
+            minutes = (json or {}).get('lifetimeInMinutes', 60)
+            if not 10 <= minutes <= 43200:
+                raise GraphError('Invalid lifetimeInMinutes', status_code=400, code='badRequest')
+            self.taps = getattr(self, 'taps', {})
+            self.taps[m.group(1)] = dict(json or {})        # a new pass replaces the old one
+            return GraphResponse(201, {}, {'id': 'tap-1', 'temporaryAccessPass': 'T@p-9x2Q', 'isUsable': True,
+                                           'lifetimeInMinutes': minutes, 'isUsableOnce': (json or {}).get('isUsableOnce', True)})
         m = re.match('/users/([^/]+)/assignLicense$', path)
         if m and method == 'POST':
             return self._assign_license(m.group(1), json)
