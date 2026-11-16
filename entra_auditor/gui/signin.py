@@ -12,6 +12,7 @@ from typing import Any, Optional, Sequence
 from PySide6.QtCore import Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
 from PySide6.QtWidgets import (
+    QCheckBox,
     QButtonGroup,
     QComboBox,
     QDialog,
@@ -55,6 +56,7 @@ class SignInDialog(QDialog):
         self.tenant_box = QComboBox()
         for tenant in self.tenants:
             self.tenant_box.addItem(tenant.name, tenant)
+        self.tenant_box.currentIndexChanged.connect(self._tenant_changed)
         form.addRow("Tenant", self.tenant_box)
 
         method = QWidget()
@@ -73,6 +75,10 @@ class SignInDialog(QDialog):
         row.addWidget(self.browser_radio)
         row.addStretch()
         form.addRow("Method", method)
+        self.read_only_box = QCheckBox("Read-only: look, don't change anything")
+        self.read_only_box.setToolTip("Every change and every role activation is refused for this session. "
+                                      "Recommended for a first look at a production tenant.")
+        form.addRow("", self.read_only_box)
         layout.addLayout(form)
 
         # device-code panel (hidden until a code arrives)
@@ -104,6 +110,7 @@ class SignInDialog(QDialog):
         self.status.setWordWrap(True)
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.status)
+        self._tenant_changed()
 
         self.buttons = QDialogButtonBox()
         self.sign_in_button = self.buttons.addButton("Sign in", QDialogButtonBox.ButtonRole.AcceptRole)
@@ -138,6 +145,7 @@ class SignInDialog(QDialog):
         self.tenant_box.setEnabled(not busy)
         self.device_radio.setEnabled(not busy)
         self.browser_radio.setEnabled(not busy)
+        self.read_only_box.setEnabled(not busy)
 
     # -- sign-in --------------------------------------------------------------- #
 
@@ -183,11 +191,16 @@ class SignInDialog(QDialog):
         if self.device_code:
             QDesktopServices.openUrl(QUrl(self.device_code.verification_uri))
 
+    def _tenant_changed(self, _index: int = 0) -> None:
+        tenant = self.tenant_box.currentData()
+        self.read_only_box.setChecked(bool(getattr(tenant, "read_only", False)))
+
     def _signed_in(self, attempt: int, session: GuiSession) -> None:
         if attempt != self._attempt:
             session.close()     # the dialog was cancelled while this was finishing
             return
         self._provider = None
+        session.read_only = self.read_only_box.isChecked()
         self.session = session
         self.accept()
 

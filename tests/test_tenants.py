@@ -120,3 +120,14 @@ def test_a_tenant_can_start_with_external_users_hidden():
     assert parse_tenants(base % ', "hide_external": true')[0].hide_external is True
     with pytest.raises(TenantConfigError, match="hide_external must be true or false"):
         parse_tenants(base % ', "hide_external": "yes"')
+
+
+def test_a_tenant_can_start_read_only():
+    import pytest
+
+    from entra_auditor.tenants import TenantConfigError, parse_tenants
+    base = '{"tenants": [{"name": "Prod", "tenant_id": "contoso.com", "client_id": "c1"%s}]}'
+    assert parse_tenants(base % "")[0].read_only is False
+    assert parse_tenants(base % ', "read_only": true')[0].read_only is True
+    with pytest.raises(TenantConfigError, match="read_only must be true or false"):
+        parse_tenants(base % ', "read_only": 1')

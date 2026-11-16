@@ -830,3 +830,71 @@ def test_the_task_runner_keeps_a_job_alive_until_its_result_is_delivered(qtbot, 
     release.set()
     qtbot.waitUntil(lambda: done == ["ok"])
     assert runner._jobs == {} and not runner.busy
+
+
+# ---- read-only sessions -----------------------------------------------------------------------------
+
+def read_only_window(qtbot, runner, tenant=None):
+    session = FakeSession(tenant or licence_tenant())
+    session.read_only = True
+    win = MainWindow(session, runner, change_sleep=lambda s: None)
+    qtbot.addWidget(win)
+    win.show()
+    win.load_directory()
+    qtbot.waitUntil(lambda: not win.loading)
+    return win
+
+
+def test_a_read_only_window_says_so_and_offers_no_writes(qtbot, runner):
+    win = read_only_window(qtbot, runner)
+    assert win.windowTitle().endswith("[READ-ONLY]") and "READ-ONLY" in win.read_only_label.text()
+    win.select_user("u-alice")
+    qtbot.waitUntil(lambda: win.detail.profile is not None)
+    for action in (win.toggle_action, win.offboard_action, win.new_user_action):
+        assert not action.isEnabled() and "Read-only" in action.toolTip()
+    tab = win.detail.licences_tab
+    win.detail.tabs.setCurrentWidget(tab)
+    qtbot.waitUntil(lambda: tab.report is not None)
+    assert tab.texts() and not tab.change_button.isEnabled()     # still shows everything, changes nothing
+    win.show_section("Groups")
+    qtbot.waitUntil(lambda: win.groups_page.loaded)
+    win.groups_page.select_group("g-fin")
+    qtbot.waitUntil(lambda: not win.groups_page.loading_contents)
+    assert win.groups_page.people_names() and not win.groups_page.add_users_button.isEnabled()
+    assert win.groups_page.add_users_button.toolTip() == "Read-only session."
+
+
+def test_a_read_only_window_refuses_a_change_even_if_one_is_started(qtbot, runner, monkeypatch):
+    from entra_auditor.toolkit.actions import plan_set_enabled
+    said = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: said.append(a[2]))
+    tenant = licence_tenant()
+    win = read_only_window(qtbot, runner, tenant)
+    win.select_user("u-alice")
+    assert win.start_change(plan_set_enabled(win.selected_user(), False)) is None
+    assert "read-only" in said[0] and tenant.writes == [] and win.change is None
+
+
+def test_the_read_only_choice_on_the_sign_in_screen_reaches_the_session(qtbot, runner):
+    import dataclasses
+
+    from entra_auditor.gui.signin import SignInDialog
+    from tests.gui_support import TENANT
+    tenants = [TENANT, dataclasses.replace(TENANT, name="Prod", read_only=True)]
+    dialog = SignInDialog(tenants, runner)
+    qtbot.addWidget(dialog)
+    assert not dialog.read_only_box.isChecked()
+    dialog.tenant_box.setCurrentIndex(1)
+    assert dialog.read_only_box.isChecked()                     # the tenant's default
+    dialog.read_only_box.setChecked(False)                      # ...which the user can override
+    session = FakeSession()
+    dialog._attempt = 1
+    dialog._signed_in(1, session)
+    assert session.read_only is False and dialog.session is session
+    dialog2 = SignInDialog(tenants, runner)
+    qtbot.addWidget(dialog2)
+    dialog2.read_only_box.setChecked(True)
+    other = FakeSession()
+    dialog2._attempt = 1
+    dialog2._signed_in(1, other)
+    assert other.read_only is True

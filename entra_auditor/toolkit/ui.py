@@ -53,6 +53,7 @@ class Session:
     provider: Any
     settings: Any
     identity: str
+    read_only: bool = False         # AUDITOR_READ_ONLY=1: every change is refused (see toolkit/flow.py)
 
     @property
     def user_mode(self) -> bool:
@@ -94,8 +95,11 @@ def open_session(mode: Optional[str]) -> Iterator[Session]:
         provider.get_token()  # sign in BEFORE any spinner so prompts stay visible
     except AuthenticationError as exc:
         fail(str(exc))
+    read_only = os.environ.get("AUDITOR_READ_ONLY", "").strip().lower() in ("1", "true", "yes")
+    if read_only:
+        err.print("[yellow]Read-only session (AUDITOR_READ_ONLY):[/] changes and role activations are refused.")
     with GraphClient(provider) as graph:
-        yield Session(graph, provider, settings, provider.identity())
+        yield Session(graph, provider, settings, provider.identity(), read_only)
 
 
 # --------------------------------------------------------------------------- #

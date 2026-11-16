@@ -211,6 +211,11 @@ the filter chooses what is loaded (all users, members, guests, or only users syn
 server-side filter. Add `"user_scope": "members"` (or `guests`, `synced`) to a tenant in `tenants.json` to start
 with that scope.
 
+**Read-only:** tick "Read-only" on the sign-in screen (or set `"read_only": true` for a tenant in
+`tenants.json`) to look around without any risk: every change and role activation is refused, write buttons
+are greyed out and the window says READ-ONLY. Giving up a role you already have active still works. On the
+command line, `AUDITOR_READ_ONLY=1` does the same.
+
 **Switch tenant...** in the toolbar closes the current tenant and returns to the sign-in dialog; each tenant
 keeps its own sign-in, so going back to one you used earlier is usually silent.
 

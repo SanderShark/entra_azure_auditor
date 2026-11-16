@@ -10,7 +10,8 @@ or point ``AUDITOR_TENANTS_FILE`` at the file itself)::
         {"name": "Big tenant", "tenant_id": "...", "client_id": "...", "user_scope": "synced"}
     ]}
 
-``user_scope`` (optional) is which users the desktop app loads at start: ``all`` (default), ``members``,
+``read_only`` (optional, true/false) starts the desktop app with every write switched off; it can be
+changed on the sign-in screen. ``user_scope`` (optional) is which users the desktop app loads at start: ``all`` (default), ``members``,
 ``guests`` or ``synced`` (synced from on-premises AD). ``hide_external`` (optional, true/false) starts with
 external users (``#EXT#`` in the sign-in name: guests and cross-tenant-synced users) left out of the list.
 Set them for tenants with far more user objects than people; both can still be switched in the app.
@@ -52,6 +53,7 @@ class TenantConfig:
     authority_host: str = DEFAULT_AUTHORITY_HOST
     user_scope: str = "all"
     hide_external: bool = False
+    read_only: bool = False
 
     @property
     def key(self) -> str:
@@ -94,10 +96,13 @@ def _validated(entry: object, where: str) -> TenantConfig:
     scope = entry.get("user_scope", "all")
     if scope not in USER_SCOPE_NAMES:
         raise TenantConfigError(f"{where}: user_scope must be one of {', '.join(USER_SCOPE_NAMES)}, not {scope!r}.")
-    hide_external = entry.get("hide_external", False)
-    if not isinstance(hide_external, bool):
-        raise TenantConfigError(f"{where}: hide_external must be true or false.")
-    return TenantConfig(values["name"], values["tenant_id"], values["client_id"], host.rstrip("/"), scope, hide_external)
+    flags = {}
+    for flag in ("hide_external", "read_only"):
+        flags[flag] = entry.get(flag, False)
+        if not isinstance(flags[flag], bool):
+            raise TenantConfigError(f"{where}: {flag} must be true or false.")
+    return TenantConfig(values["name"], values["tenant_id"], values["client_id"], host.rstrip("/"), scope,
+                        flags["hide_external"], flags["read_only"])
 
 
 def parse_tenants(text: str, source: str = "tenants.json") -> list[TenantConfig]:

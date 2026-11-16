@@ -459,7 +459,8 @@ class AdminUnitsPage(QWidget):
                 if not self.member_table.isRowHidden(r)]
 
     def _update_buttons(self) -> None:
-        unit, idle = self.unit, self.window.change is None and not self.loading_contents
+        unit = self.unit
+        idle = self.window.change is None and not self.loading_contents and not getattr(self.window, "read_only", False)
         manual = bool(unit and not unit.is_dynamic and self.members is not None and idle)
         for button in (self.add_users_button, self.add_groups_button, self.add_devices_button):
             button.setEnabled(manual)

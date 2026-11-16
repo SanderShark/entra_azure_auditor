@@ -30,6 +30,7 @@ from .admin_units import admin_units_of
 from .group_pim import GroupAccess, GroupPimService
 from .pim import AU_SCOPE_PREFIX, TENANT_SCOPE, PimError, PimRole, PimService, scope_applies
 
+READ_ONLY_MESSAGE = "Read-only session: nothing was sent. Sign in without read-only mode to make changes."
 RETRY_ATTEMPTS = 4         # tries after an elevation (the role takes a moment to take effect)
 RETRY_WAIT = 8.0           # seconds between those tries
 
@@ -123,11 +124,19 @@ class RecordingReporter:
 # PIM activation (also used on its own by `pim activate`)
 # --------------------------------------------------------------------------- #
 
+def is_read_only(sess: Any) -> bool:
+    """A read-only session sends no change and activates no role (giving up an active role is still allowed)."""
+    return bool(getattr(sess, "read_only", False))
+
+
 def activate_and_wait(sess: Any, pim: Any, role: Candidate, reason: str, minutes: int,
                       reporter: Optional[Reporter] = None) -> bool:
     """Activate `role` (with a PimService) or a group membership (with a GroupPimService), wait until it is
     effective and refresh the token. True when it is usable."""
     rep = reporter or NullReporter()
+    if is_read_only(sess):
+        rep.notice(Notice("error", f"Not activating {role.name}: this is a read-only session."))
+        return False
     try:
         result = pim.activate(role, reason=reason, minutes=minutes)
     except PimError as exc:
@@ -196,6 +205,8 @@ class ChangeFlow:
         if self.dry_run:
             return self._done(execute_plan(self.sess.graph, self.plan, actor=self.sess.identity, dry_run=True),
                               add_secrets=False)
+        if is_read_only(self.sess):       # the backstop: whatever screen or command built the plan
+            return self._done(ActionResult("skipped", READ_ONLY_MESSAGE), add_secrets=False)
         return self._go(NeedsConfirmation(self.plan))
 
     def confirm(self, apply: bool) -> Step:

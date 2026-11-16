@@ -37,6 +37,7 @@ def test_the_example_tenants_file_is_valid():
     from entra_auditor.tenants import parse_tenants
     tenants = parse_tenants(_repo("tenants.example.json").read_text(encoding="utf-8"))
     assert [t.user_scope for t in tenants] == ["all", "synced", "all"] and tenants[1].hide_external
+    assert [t.read_only for t in tenants] == [False, True, False]
     assert tenants[2].authority_host == "https://login.microsoftonline.us"
 
 

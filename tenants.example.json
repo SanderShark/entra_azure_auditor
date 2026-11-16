@@ -6,11 +6,12 @@
       "client_id": "00000000-0000-0000-0000-000000000000"
     },
     {
-      "name": "Contoso (large: start with synced users, no external ones)",
+      "name": "Contoso production (large: synced users only, read-only to start)",
       "tenant_id": "contoso.onmicrosoft.com",
       "client_id": "00000000-0000-0000-0000-000000000000",
       "user_scope": "synced",
-      "hide_external": true
+      "hide_external": true,
+      "read_only": true
     },
     {
       "name": "Fabrikam (US Government)",

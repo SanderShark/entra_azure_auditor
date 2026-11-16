@@ -397,6 +397,8 @@ class GroupsPage(QWidget):
         group, edge = self.group, self.edge
         idle = self.window.change is None and not self.loading_contents
         reason = read_only_reason(group, edge) if group else ""
+        if getattr(self.window, "read_only", False):
+            idle, reason = False, "Read-only session."
         can = bool(group and idle and not reason and self._people() is not None)
         self.add_users_button.setEnabled(can)
         self.add_users_button.setText("Add users..." if edge == MEMBERS else "Add owners...")

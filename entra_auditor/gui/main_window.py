@@ -76,7 +76,8 @@ class MainWindow(QMainWindow):
         self._load_generation = 0
         self.loading = False
         self.change: Optional[ChangeController] = None
-        self.setWindowTitle(f"Entra toolkit - {session.tenant.name}")
+        self.read_only = bool(getattr(session, "read_only", False))
+        self.setWindowTitle(f"Entra toolkit - {session.tenant.name}" + ("  [READ-ONLY]" if self.read_only else ""))
         self.resize(1280, 760)
 
         # -- navigation -------------------------------------------------------- #
@@ -203,6 +204,13 @@ class MainWindow(QMainWindow):
 
         self.identity_label = QLabel(f"{session.identity.removeprefix('user:')}  |  {session.tenant.name}")
         self.statusBar().addPermanentWidget(self.identity_label)
+        if self.read_only:
+            self.read_only_label = QLabel("  READ-ONLY: no changes  ")
+            self.read_only_label.setStyleSheet("background: #fff3cd; color: #7a5600; font-weight: bold;")
+            self.read_only_label.setToolTip("Signed in read-only: changes and role activations are refused. "
+                                            "Sign in again without read-only mode to make changes.")
+            self.statusBar().addPermanentWidget(self.read_only_label)
+        self.detail.licences_tab.read_only = self.read_only
 
         # -- wiring ---------------------------------------------------------------- #
         self._filter_timer = QTimer(self)
@@ -370,8 +378,14 @@ class MainWindow(QMainWindow):
             self.detail.show_user(user)
 
     def _update_actions(self, user: Optional[UserSummary]) -> None:
-        self.offboard_action.setEnabled(user is not None and self.change is None and not self._gathering)
-        self.new_user_action.setEnabled(self.change is None and not self._gathering)
+        writable = not self.read_only
+        self.offboard_action.setEnabled(writable and user is not None and self.change is None and not self._gathering)
+        self.new_user_action.setEnabled(writable and self.change is None and not self._gathering)
+        if not writable:
+            self.toggle_action.setEnabled(False)
+            for action in (self.toggle_action, self.offboard_action, self.new_user_action):
+                action.setToolTip("Read-only session: sign in without read-only mode to make changes.")
+            return
         if user is None or user.account_enabled is None:
             self.toggle_action.setText("Disable account")
             self.toggle_action.setEnabled(False)
@@ -495,6 +509,10 @@ class MainWindow(QMainWindow):
                      on_finished: Optional[Callable[[Any], None]] = None,
                      extra_secrets: Optional[dict[str, str]] = None) -> Optional[ChangeController]:
         """Run a change through the dialogs. One at a time: returns None if another is still running."""
+        if self.read_only:
+            QMessageBox.information(self, "Read-only session", "This session is read-only: nothing was changed.\n\n"
+                                    "Sign in again without read-only mode to make changes.")
+            return None
         if self.change is not None:
             QMessageBox.information(self, "Another change is running", "Finish the current change first.")
             return None

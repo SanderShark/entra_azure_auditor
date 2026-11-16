@@ -27,6 +27,7 @@ class GuiSession:
     provider: Any
     identity: str
     last_refresh_error: Optional[str] = field(default=None, repr=False)
+    read_only: bool = False       # chosen on the sign-in screen: every change is refused (toolkit/flow.py)
 
     @property
     def user_mode(self) -> bool:

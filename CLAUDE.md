@@ -87,6 +87,10 @@ tests/                 ~1010 tests (the count grows; see NEXT_SESSION.md), no ne
    `suggested_roles`, require a justification, wait for it to take effect, refresh the token, retry.
 10. **Read-only audit scopes never include write permissions**; toolkit scopes are separate (`TOOLKIT_SCOPES`).
 
+11. **Read-only sessions send nothing.** `toolkit/flow.py` refuses at `ChangeFlow.start` and in
+    `activate_and_wait` when `sess.read_only` is set; the GUI also greys out writes. Any new write path must go
+    through the flow (rule 1) so this backstop covers it; a new button must also check `window.read_only`.
+
 ## Testing rules
 
 - Every behaviour change gets a test at its boundary (both sides: "90 days is not inactive, 91 is").

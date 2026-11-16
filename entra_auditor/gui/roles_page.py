@@ -257,7 +257,10 @@ class RolesPage(QWidget):
 
     def _update_buttons(self) -> None:
         row = self.selected()
-        self.activate_button.setEnabled(bool(row and row.can_activate and not self.busy))
+        read_only = getattr(self.window, "read_only", False)
+        self.activate_button.setEnabled(bool(row and row.can_activate and not self.busy and not read_only))
+        self.activate_button.setToolTip("Read-only session: roles can't be activated (you can still deactivate one)."
+                                        if read_only else "")
         self.deactivate_button.setEnabled(bool(row and row.can_deactivate and not self.busy))
 
     # -- activate / deactivate -------------------------------------------------------------------- #

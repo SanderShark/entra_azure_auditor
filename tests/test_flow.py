@@ -438,3 +438,25 @@ def test_a_pim_group_whose_role_is_scoped_to_another_unit_is_not_offered():
         if offered:
             env.flow.choose_role(step.candidate_roles[0])
             assert env.flow.justify("INC-9").result.status == "ok"
+
+
+# ---- read-only sessions -------------------------------------------------------------------------
+
+def test_a_read_only_session_sends_nothing_and_activates_nothing():
+    env = make()
+    env.sess.read_only = True
+    step = env.flow.start()
+    assert isinstance(step, F.Done) and step.result.status == "skipped" and "Read-only session" in step.result.message
+    assert env.tenant.writes == [] and env.flow.done
+    with pytest.raises(F.FlowStateError):
+        env.flow.confirm(True)                                  # there is no confirmation to answer
+    role = env.flow._pim_service().eligible()[0]
+    assert not F.activate_and_wait(env.sess, env.flow._pim_service(), role, "INC-1", 30, env.reporter)
+    assert env.tenant.writes == [] and "read-only session" in texts(env.reporter)
+
+
+def test_a_dry_run_still_works_read_only():
+    env = make(dry_run=True)
+    env.sess.read_only = True
+    step = env.flow.start()
+    assert step.result.status == "dry_run" and env.tenant.writes == []

@@ -16,7 +16,7 @@ turns into a pile of patches.
 3. **Set up and run the checks** (the environment has no `python`; use `python3` and a venv):
    ```bash
    python3 -m venv .venv && .venv/bin/python -m pip install -r requirements-dev.txt   # includes PySide6 + pytest-qt
-   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 1012 passed (the default addopts hide the summary)
+   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -o addopts=""    # 1018 passed (the default addopts hide the summary)
    .venv/bin/ruff check .                                               # clean
    ```
 4. Then: section 4 (what to build next) and section 3 (questions for the owner).
@@ -40,6 +40,9 @@ preview (exact requests; Cancel is the default) -> confirm -> on "forbidden" a P
 | **Administrative units** | `gui/admin_units_page.py`, `toolkit/admin_units.py` | a two-level tree: unit, then Users / Groups / Devices nodes (counts once opened; a node filters the member table without reloading); settings, scoped roles |
 | **Roles / PIM** | `gui/roles_page.py`, `toolkit/pim.py`, `toolkit/group_pim.py` | your roles and PIM-for-Groups; activate/deactivate |
 | Audit, Action log | - | still greyed out in the navigation |
+
+**Read-only sessions** (checkbox on the sign-in screen, `read_only` in tenants.json, `AUDITOR_READ_ONLY=1` on the
+command line): the flow refuses every change and role activation; write controls are greyed out.
 
 **Command line only:** the read-only audit; `auditor id|group|pim ...`; and **`auditor sync ...`** (section 5).
 

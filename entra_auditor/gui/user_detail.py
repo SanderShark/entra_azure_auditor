@@ -389,6 +389,7 @@ class LicencesTab(QWidget):
         self.report: Optional[LicenceReport] = None
         self.on_plan: Optional[Callable[[Any, UserSummary], None]] = None
         self.dialog: Optional[LicenceDialog] = None
+        self.read_only = False          # set by the window for a read-only session
         self._generation = 0
         self._requested = False
 
@@ -438,9 +439,9 @@ class LicencesTab(QWidget):
         lines = [f"Usage location: {report.usage_location or 'not set (needed before a licence can be assigned)'}"]
         self.summary.setText("\n".join(lines + [f"! {w}" for w in report.warnings]))
         # changing needs both lists: what the tenant has, and what the user holds
-        self.change_button.setEnabled(report.licences is not None and bool(report.skus))
-        self.change_button.setToolTip("" if self.change_button.isEnabled() else
-                                      "The tenant's subscriptions or the user's licences couldn't be read.")
+        self.change_button.setEnabled(report.licences is not None and bool(report.skus) and not self.read_only)
+        self.change_button.setToolTip("Read-only session." if self.read_only else "" if self.change_button.isEnabled()
+                                      else "The tenant's subscriptions or the user's licences couldn't be read.")
 
     def _failed(self, generation: int, exc: BaseException) -> None:
         if generation != self._generation:
